@@ -32,6 +32,9 @@ readonly MAX_ALARMS=64
 readonly MAX_MESSAGE=200
 readonly MAX_SPEC=200
 readonly MAX_SNOOZE_MINUTES=1440
+# How long an unanswered alarm keeps sounding. It stays ringing in the panel
+# and the bar after that, it just stops making noise.
+readonly MAX_RING_SECONDS=300
 
 readonly SOUND="/usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga"
 # nf-md-timer, the same glyph the bar widget wears, so a Nag notification is
@@ -710,7 +713,12 @@ cmd_fire() {
   refresh_panel
 
   # Foreground: systemd stops whatever this unit leaves behind when it exits.
-  [[ -r $SOUND ]] && pw-play "$SOUND" >/dev/null 2>&1 || true
+  # Repeats until answered: snooze, dismiss and cancel stop this unit.
+  [[ -r $SOUND ]] || return 0
+  local stop_at=$((SECONDS + MAX_RING_SECONDS))
+  while [[ -f $RING_DIR/$id.json ]] && ((SECONDS < stop_at)); do
+    pw-play "$SOUND" >/dev/null 2>&1 || break
+  done
 }
 
 # `demo on` and `demo off`, plus a bare `demo` that says which it is. Turning it

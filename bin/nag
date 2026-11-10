@@ -695,8 +695,6 @@ cmd_fire() {
   write_state "$RING_DIR/$id.json" "$payload"
   rm -f -- "$file"
 
-  [[ -r $SOUND ]] && (pw-play "$SOUND" >/dev/null 2>&1 &) || true
-
   # The summary and body are rendered by components this plugin does not own,
   # and the summary here is whatever somebody typed into the field.
   local headline
@@ -710,6 +708,12 @@ cmd_fire() {
     --exec omarchy-shell shell summon jankeesvw.nag >/dev/null 2>&1 || true
 
   refresh_panel
+
+  # Foreground, and last. This runs as a transient systemd unit, and when its
+  # main process exits systemd stops every process left in the unit's cgroup,
+  # so a backgrounded pw-play was killed before the alarm was heard. Blocking
+  # here keeps the unit alive exactly as long as the sound.
+  [[ -r $SOUND ]] && pw-play "$SOUND" >/dev/null 2>&1 || true
 }
 
 # `demo on` and `demo off`, plus a bare `demo` that says which it is. Turning it

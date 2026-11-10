@@ -45,7 +45,7 @@ Typing anything takes the cursor back out of the list, so you never have to thin
 
 ## When it goes off
 
-A critical notification, the freedesktop alarm sound, and the bar widget pulsing red. The alarm keeps ringing in the panel until you dismiss or snooze it, because an alarm that clears itself after a few seconds is one you can miss, and missing it is the whole thing this is meant to prevent. Clicking the notification opens the panel.
+A critical notification, the freedesktop alarm sound repeating until you snooze or dismiss it (for up to five minutes), and the bar widget pulsing red. The alarm keeps ringing in the panel until you dismiss or snooze it, because an alarm that clears itself after a few seconds is one you can miss, and missing it is the whole thing this is meant to prevent. Clicking the notification opens the panel.
 
 ## Setting one from anywhere
 

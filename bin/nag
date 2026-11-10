@@ -712,13 +712,8 @@ cmd_fire() {
 
   refresh_panel
 
-  # Foreground, and last. This runs as a transient systemd unit, and when its
-  # main process exits systemd stops every process left in the unit's cgroup,
-  # so a backgrounded pw-play was killed before the alarm was heard.
-  #
-  # The sound repeats until the alarm is answered. Snooze, dismiss and cancel
-  # all go through cancel_alarm, which stops this unit, so the sound ends the
-  # moment the alarm is dealt with rather than at the end of a loop.
+  # Foreground: systemd stops whatever this unit leaves behind when it exits.
+  # Repeats until answered: snooze, dismiss and cancel stop this unit.
   [[ -r $SOUND ]] || return 0
   local stop_at=$((SECONDS + MAX_RING_SECONDS))
   while [[ -f $RING_DIR/$id.json ]] && ((SECONDS < stop_at)); do

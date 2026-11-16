@@ -32,11 +32,8 @@ readonly MAX_ALARMS=64
 readonly MAX_MESSAGE=200
 readonly MAX_SPEC=200
 readonly MAX_SNOOZE_MINUTES=1440
-# How long an unanswered alarm keeps sounding. It stays ringing in the panel
-# and the bar after that, it just stops making noise.
-readonly MAX_RING_SECONDS=300
-
-readonly SOUND="/usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga"
+# Played when the `sound` setting names no readable file.
+readonly DEFAULT_SOUND="/usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga"
 # nf-md-timer, the same glyph the bar widget wears, so a Nag notification is
 # recognisable as one at a glance instead of looking like every other toast.
 readonly DEFAULT_GLYPH=$'󰔟'
@@ -52,12 +49,18 @@ die() {
 
 ok_json() { jq -cn "$@"; }
 
-# The widget's `icon` setting when there is one, so the notification wears the
-# glyph the bar does. Read only when a notification goes out: `list` and
-# `parse` run every few seconds and have no use for it.
+# One of the widget's settings from shell.json, empty when unset. Read only
+# when an alarm or a notification goes out: `list` and `parse` run every few
+# seconds and have no use for them.
+widget_setting() {
+  omarchy-bar get jankeesvw.nag "$1" 2>/dev/null || true
+}
+
+# The `icon` setting when there is one, so the notification wears the glyph the
+# bar does.
 glyph() {
   local icon
-  icon=$(omarchy-bar get jankeesvw.nag icon 2>/dev/null) || icon=""
+  icon=$(widget_setting icon)
   icon=$(strip_markup "$icon")
   icon=${icon:0:4}
   printf '%s' "${icon:-$DEFAULT_GLYPH}"
@@ -729,12 +732,24 @@ cmd_fire() {
 
   refresh_panel
 
+  # Settings: `soundOn` false is silent, `sound` is the file (the freedesktop
+  # alarm when unset or unreadable), `soundRepeat` false plays it once.
+  [[ $(widget_setting soundOn) == "false" ]] && return 0
+  local sound
+  sound=$(widget_setting sound)
+  sound=${sound/#\~/$HOME}
+  [[ -n $sound && -f $sound && -r $sound ]] || sound=$DEFAULT_SOUND
+  [[ -r $sound ]] || return 0
+
   # Foreground: systemd stops whatever this unit leaves behind when it exits.
-  # Repeats until answered: snooze, dismiss and cancel stop this unit.
-  [[ -r $SOUND ]] || return 0
-  local stop_at=$((SECONDS + MAX_RING_SECONDS))
-  while [[ -f $RING_DIR/$id.json ]] && ((SECONDS < stop_at)); do
-    pw-play "$SOUND" >/dev/null 2>&1 || break
+  # Repeats until answered, however long that takes: snooze, dismiss and cancel
+  # stop this unit.
+  if [[ $(widget_setting soundRepeat) == "false" ]]; then
+    pw-play -- "$sound" >/dev/null 2>&1 || true
+    return 0
+  fi
+  while [[ -f $RING_DIR/$id.json ]]; do
+    pw-play -- "$sound" >/dev/null 2>&1 || break
   done
 }
 

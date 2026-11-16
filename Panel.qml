@@ -58,6 +58,13 @@ Panel {
   readonly property string iconSnooze: "\uF186"
   readonly property string iconSettings: "\uF013"
   readonly property string iconBack: "\uF060"
+  readonly property string iconPlay: "\uF04B"
+
+  // The sound settings, as bin/nag reads them when an alarm goes off.
+  readonly property string defaultSound: "/usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga"
+  readonly property bool soundOn: setting("soundOn", true) !== false
+  readonly property bool soundRepeat: setting("soundRepeat", true) !== false
+  readonly property string soundPath: String(setting("sound", "") || "")
 
   readonly property color foreground: bar ? bar.foreground : Commons.Color.foreground
   readonly property color accent: Commons.Color.accent
@@ -921,6 +928,77 @@ Panel {
               { value: "\uDB80\uDC9A", label: "\uDB80\uDC9A", tooltip: "Bell" }
             ]
             onChanged: function(value) { root.writeSetting("icon", value) }
+          }
+
+          PanelSeparator { width: parent.width }
+
+          PanelSectionHeader {
+            text: "Sound"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+          }
+
+          Toggle {
+            width: parent.width
+            label: "Play a sound"
+            description: root.soundOn ? "When an alarm goes off" : "Alarms ring silently, in the bar and the notification"
+            checked: root.soundOn
+            foreground: root.foreground
+            accent: root.accent
+            fontFamily: root.fontFamily
+            onClicked: root.writeSetting("soundOn", !root.soundOn)
+          }
+
+          // The file and how often it plays only matter with a sound, so they
+          // fold away with it.
+          Column {
+            width: parent.width
+            visible: root.soundOn
+            spacing: Style.space(4)
+
+            Row {
+              width: parent.width
+              spacing: Style.space(4)
+
+              TextField {
+                id: soundField
+                width: parent.width - playButton.width - parent.spacing
+                foreground: root.foreground
+                accent: root.accent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                placeholderText: "Default alarm, or a file path"
+                text: root.soundPath
+                onEditingFinished: if (text.trim() !== root.soundPath) root.writeSetting("sound", text.trim())
+              }
+
+              // Hear it before an alarm does. Plays what is in the field, saved
+              // or not, and falls back the way bin/nag does.
+              PanelActionButton {
+                id: playButton
+                anchors.verticalCenter: parent.verticalCenter
+                focusable: false
+                iconText: root.iconPlay
+                tooltipText: "Play"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: {
+                  var path = soundField.text.trim().replace(/^~(?=\/)/, Quickshell.env("HOME"))
+                  Quickshell.execDetached(["pw-play", "--", path.length > 0 ? path : root.defaultSound])
+                }
+              }
+            }
+
+            Toggle {
+              width: parent.width
+              label: "Repeat until answered"
+              description: root.soundRepeat ? "Plays again until you snooze or dismiss" : "Plays once"
+              checked: root.soundRepeat
+              foreground: root.foreground
+              accent: root.accent
+              fontFamily: root.fontFamily
+              onClicked: root.writeSetting("soundRepeat", !root.soundRepeat)
+            }
           }
         }
       }

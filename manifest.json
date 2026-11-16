@@ -31,6 +31,27 @@
         "label": "Icon",
         "description": "A glyph for the bar and the notifications, such as Omarchy's reminder bell 󰢌. Empty keeps the timer.",
         "defaultValue": ""
+      },
+      {
+        "key": "soundOn",
+        "type": "boolean",
+        "label": "Play a sound",
+        "description": "Off, alarms ring silently, in the bar and the notification.",
+        "defaultValue": true
+      },
+      {
+        "key": "sound",
+        "type": "path",
+        "label": "Sound",
+        "description": "A file pw-play can read. Empty plays the freedesktop alarm.",
+        "defaultValue": ""
+      },
+      {
+        "key": "soundRepeat",
+        "type": "boolean",
+        "label": "Repeat until answered",
+        "description": "Off, the sound plays once.",
+        "defaultValue": true
       }
     ]
   }

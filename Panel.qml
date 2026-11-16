@@ -89,6 +89,14 @@ Panel {
     return options
   }
 
+  // Minutes a snooze puts an alarm off, from the panel and the notification.
+  readonly property int snoozeMinutes: {
+    var minutes = Number(setting("snoozeMinutes", 5))
+    return minutes >= 1 && minutes <= 1440 ? Math.floor(minutes) : 5
+  }
+  // Custom shows the number field even while the value is still 5 or 10.
+  property bool snoozeCustom: false
+
   readonly property color foreground: bar ? bar.foreground : Commons.Color.foreground
   readonly property color accent: Commons.Color.accent
   readonly property color urgent: bar ? bar.urgent : Commons.Color.urgent
@@ -513,6 +521,7 @@ Panel {
     actionError = ""
     cursor = -1
     view = "alarms"
+    snoozeCustom = false
 
     // A new example every time the panel opens, rather than on a timer. Over a
     // week you see all of them, and the line never moves while you are reading
@@ -749,7 +758,7 @@ Panel {
               // one key when an alarm is going off in front of you.
               if (onRow) {
                 var alarm = root.cursorAlarm()
-                if (alarm && alarm.ringing) root.snoozeAlarm(alarm.id, 5)
+                if (alarm && alarm.ringing) root.snoozeAlarm(alarm.id, root.snoozeMinutes)
               } else {
                 root.setAlarm()
               }
@@ -913,10 +922,10 @@ Panel {
                     visible: modelData.ringing
                     focusable: false
                     iconText: root.iconSnooze
-                    tooltipText: "Snooze 5 minutes"
+                    tooltipText: "Snooze " + root.snoozeMinutes + " minutes"
                     foreground: rowColor
                     fontFamily: root.fontFamily
-                    onClicked: root.snoozeAlarm(modelData.id, 5)
+                    onClicked: root.snoozeAlarm(modelData.id, root.snoozeMinutes)
                   }
 
                   PanelActionButton {
@@ -1062,6 +1071,44 @@ Panel {
               fontFamily: root.fontFamily
               onClicked: root.writeSetting("soundRepeat", !root.soundRepeat)
             }
+          }
+
+          PanelSeparator { width: parent.width }
+
+          PanelSectionHeader {
+            text: "Snooze"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+          }
+
+          ButtonGroup {
+            readonly property bool custom: root.snoozeCustom
+              || (root.snoozeMinutes !== 5 && root.snoozeMinutes !== 10)
+            value: custom ? "custom" : String(root.snoozeMinutes)
+            foreground: root.foreground
+            accent: root.accent
+            fontFamily: root.fontFamily
+            options: [
+              { value: "5", label: "5 min" },
+              { value: "10", label: "10 min" },
+              { value: "custom", label: "Custom" }
+            ]
+            onChanged: function(value) {
+              root.snoozeCustom = value === "custom"
+              if (value !== "custom") root.writeSetting("snoozeMinutes", Number(value))
+            }
+          }
+
+          NumberField {
+            visible: root.snoozeCustom || (root.snoozeMinutes !== 5 && root.snoozeMinutes !== 10)
+            label: "Minutes"
+            from: 1
+            to: 1440
+            value: root.snoozeMinutes
+            foreground: root.foreground
+            accent: root.accent
+            fontFamily: root.fontFamily
+            onModified: function(value) { root.writeSetting("snoozeMinutes", value) }
           }
         }
       }

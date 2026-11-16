@@ -37,7 +37,7 @@ Everything works without the mouse, and the field keeps the focus the whole time
 | --- | --- |
 | `Enter` | set the alarm |
 | `Down` and `Up` | walk into the list of alarms and back out |
-| `Enter` on a ringing alarm | snooze it five minutes |
+| `Enter` on a ringing alarm | snooze it (five minutes, or the Snooze setting) |
 | `Delete` on an alarm | remove it, or dismiss it if it is ringing |
 | `Escape` | leave the list, then close the panel |
 
@@ -45,7 +45,7 @@ Typing anything takes the cursor back out of the list, so you never have to thin
 
 ## When it goes off
 
-A critical notification, the freedesktop alarm sound repeating until you snooze or dismiss it, and the bar widget pulsing red. The alarm keeps ringing in the panel until you dismiss or snooze it, because an alarm that clears itself after a few seconds is one you can miss, and missing it is the whole thing this is meant to prevent. The notification has Snooze 5 min and Dismiss buttons, and clicking the card snoozes. On Omarchy before 4.5, which has no notification buttons, clicking it opens the panel instead.
+A critical notification, the freedesktop alarm sound repeating until you snooze or dismiss it, and the bar widget pulsing red. The alarm keeps ringing in the panel until you dismiss or snooze it, because an alarm that clears itself after a few seconds is one you can miss, and missing it is the whole thing this is meant to prevent. The notification has Snooze and Dismiss buttons, and clicking the card snoozes. On Omarchy before 4.5, which has no notification buttons, clicking it opens the panel instead.
 
 ## Setting one from anywhere
 

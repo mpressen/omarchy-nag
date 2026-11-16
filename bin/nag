@@ -56,6 +56,17 @@ widget_setting() {
   omarchy-bar get jankeesvw.nag "$1" 2>/dev/null || true
 }
 
+# The `snoozeMinutes` setting, 5 when unset or out of range.
+snooze_minutes() {
+  local minutes
+  minutes=$(widget_setting snoozeMinutes)
+  if [[ $minutes =~ ^[0-9]{1,4}$ ]] && ((10#$minutes >= 1 && 10#$minutes <= MAX_SNOOZE_MINUTES)); then
+    printf '%d' $((10#$minutes))
+  else
+    printf '5'
+  fi
+}
+
 # The `icon` setting when there is one, so the notification wears the glyph the
 # bar does.
 glyph() {
@@ -588,7 +599,8 @@ cmd_snooze() {
   # Every write is a no-op while the demo is on, so a click during a shoot
   # cannot tick away something real.
   if demo_on; then ok_json '{ok: true, demo: true}'; return; fi
-  local id=${1:-} minutes=${2:-5}
+  local id=${1:-} minutes=${2:-}
+  [[ -n $minutes ]] || minutes=$(snooze_minutes)
 
   valid_id "$id" || die "unknown alarm"
   [[ $minutes =~ ^[0-9]{1,4}$ ]] || die "bad snooze"
@@ -724,7 +736,7 @@ cmd_fire() {
   local when
   when=$(date -d "@$at" '+%H:%M')
   omarchy-notification-send -u critical -g "$(glyph)" "$headline" "$when" \
-    --action "Snooze 5 min" "$SELF" snooze \
+    --action "Snooze $(snooze_minutes) min" "$SELF" snooze \
     --action "Dismiss" "$SELF" dismiss \
     --with "$id" >/dev/null 2>&1 ||
     omarchy-notification-send -u critical -g "$(glyph)" "$headline" "$when" \
@@ -783,7 +795,7 @@ Usage: nag set <time> [message]     15:15 pick up the kids | 5m tea | tomorrow 9
        nag ask                      prompt for one through the Omarchy menu overlay
        nag parse <time> [message]   resolve without setting, for the live preview
        nag list                     every alarm as JSON
-       nag snooze <id> [minutes]    default 5
+       nag snooze <id> [minutes]    default 5, or the snoozeMinutes setting
        nag dismiss <id>
        nag cancel <id>
        nag clear

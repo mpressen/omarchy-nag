@@ -52,6 +52,16 @@
         "label": "Repeat until answered",
         "description": "Off, the sound plays once.",
         "defaultValue": true
+      },
+      {
+        "key": "snoozeMinutes",
+        "type": "integer",
+        "label": "Snooze",
+        "description": "Minutes a snooze puts an alarm off, from the panel and the notification.",
+        "min": 1,
+        "max": 1440,
+        "step": 1,
+        "defaultValue": 5
       }
     ]
   }

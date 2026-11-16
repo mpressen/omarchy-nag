@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import Quickshell.Io
+import Quickshell.Wayland
 import qs.Commons
 import qs.Commons as Commons
 import qs.Ui
@@ -16,8 +17,8 @@ import qs.Ui
 // valid time looks like, and the preview under the field is the same code path
 // that will run when Enter is pressed.
 //
-// KeyboardPanel rather than PopupCard, because PopupCard is a PopupWindow and
-// those never get keyboard focus on Wayland: a text field inside one can be
+// An OverlayWindow rather than PopupCard, because PopupCard is a PopupWindow
+// and those never get keyboard focus on Wayland: a text field inside one can be
 // clicked but not typed into, and this panel is a text field and little else.
 //
 // Glyphs are \u escapes rather than literal characters, so the source survives
@@ -497,21 +498,47 @@ Panel {
     }
   }
 
-  KeyboardPanel {
+  // A card in the middle of the screen, the way Omarchy's own reminder and menu
+  // open, rather than a panel hanging off the bar. Anchored to the button, the
+  // panel followed the bar's every resize and replayed the popup transitions
+  // each time it grew; here it has nothing to follow.
+  OverlayWindow {
     id: panel
-    anchorItem: button
-    owner: root
-    bar: root.bar
-    open: root.opened
-    // The panel opens ready to type, which is the only interaction it has.
-    focusTarget: inputField
+    shown: root.opened
+    WlrLayershell.namespace: "jankeesvw-nag"
 
-    // Plain property reads rather than fittedContentWidth, which is evaluated
-    // once on open and would not follow a panel that grows as alarms are added.
-    readonly property int desiredWidth: Style.space(300)
-    contentWidth: Math.min(desiredWidth,
-                           panel.availableCardWidth > 0 ? panel.availableCardWidth : desiredWidth)
-    contentHeight: panel.fittedContentHeight(content.implicitHeight, Style.space(620))
+    // The panel opens ready to type, which is the only interaction it has. The
+    // surface maps a moment after `shown`, so the focus waits for it.
+    onVisibleChanged: if (visible) Qt.callLater(function() { inputField.forceActiveFocus() })
+
+    Rectangle {
+      anchors.fill: parent
+      color: Commons.Color.menu.scrim
+    }
+
+    MouseArea {
+      anchors.fill: parent
+      onClicked: root.close()
+    }
+
+    BorderSurface {
+      id: card
+      width: Math.min(Style.space(360), panel.width - Style.gapsOut * 2)
+      height: Math.min(contentTopInset + content.implicitHeight + contentBottomInset,
+                       panel.height - y - Style.gapsOut)
+      // Centred across, and pinned at a third of the way down rather than
+      // centred: the card grows as alarms are added, and a card centred on its
+      // own height would move up by half a row each time.
+      x: Math.round((panel.width - width) / 2)
+      y: Math.round(panel.height * 0.3)
+      radius: Style.cornerRadius
+      color: Commons.Color.popups.background
+      borderSpec: Border.surfaceSpec("popups", "border", Commons.Color.popups.border, Math.max(1, Style.space(2)))
+      padding: Style.spacing.popupPadding
+
+      // Clicks on the card are not clicks outside it.
+      MouseArea { anchors.fill: parent }
+    }
 
     // A plain Item rather than PanelKeyCatcher. That component reads keys
     // before its descendants and turns Tab, Enter and Space into signals of its
@@ -520,7 +547,12 @@ Panel {
     // them pressable, because the catcher ate the Enter first.
     Item {
       id: keyCatcher
-      anchors.fill: parent
+      anchors.fill: card
+      anchors.topMargin: card.contentTopInset
+      anchors.rightMargin: card.contentRightInset
+      anchors.bottomMargin: card.contentBottomInset
+      anchors.leftMargin: card.contentLeftInset
+      clip: true
       focus: true
 
       Keys.onPressed: function(event) {

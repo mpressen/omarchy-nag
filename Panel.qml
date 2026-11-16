@@ -897,6 +897,31 @@ Panel {
             fontFamily: root.fontFamily
             onClicked: root.writeSetting("hideWhenIdle", !root.hideWhenIdle)
           }
+
+          PanelSeparator { width: parent.width }
+
+          PanelSectionHeader {
+            text: "Icon"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+          }
+
+          // A few glyphs that read as "alarm", the timer first because it is
+          // the default and is stored as no setting at all.
+          ButtonGroup {
+            value: String(root.setting("icon", "") || "")
+            foreground: root.foreground
+            accent: root.accent
+            fontFamily: root.fontFamily
+            fontSize: Style.bar.iconFont
+            options: [
+              { value: "", label: root.iconTimer, tooltip: "Timer" },
+              { value: "\uDB82\uDC8C", label: "\uDB82\uDC8C", tooltip: "Omarchy reminder" },
+              { value: "\uDB80\uDC20", label: "\uDB80\uDC20", tooltip: "Alarm clock" },
+              { value: "\uDB80\uDC9A", label: "\uDB80\uDC9A", tooltip: "Bell" }
+            ]
+            onChanged: function(value) { root.writeSetting("icon", value) }
+          }
         }
       }
     }

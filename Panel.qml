@@ -313,7 +313,7 @@ Panel {
   // A file chooser, opened on the current sound when it lives in the sounds
   // folder, else on the folder. The panel closes so the chooser gets the
   // keyboard; the pick is saved when it comes back, and the panel reopens on
-  // the settings, where ▶ can try it. The folder is seeded only when it does
+  // the settings, where the play button can try it. The folder is seeded only when it does
   // not exist yet, so a sound you deleted from it stays deleted.
   function chooseSound() {
     var current = soundPath.replace(/^~(?=\/)/, Quickshell.env("HOME"))
@@ -364,16 +364,78 @@ Panel {
   property string parseBuf: ""
   property string actionBuf: ""
 
-  // The ▶ preview in the settings. A new file, the chooser opening or the
+  // The play button's preview in the settings. A new file, the chooser opening or the
   // panel closing stops it, so a test never plays on over the next one.
   Process { id: soundPreview }
   onSoundPathChanged: soundPreview.running = false
 
-  // A section title in the settings: in the accent, so it stands apart from
-  // the cards' own titles.
-  component SettingsHeader: PanelSectionHeader {
-    color: Commons.Color.accent
-    fontSize: Style.font.bodySmall
+  // A settings section: its title in the accent, with the section's own
+  // on/off switch beside it when it has one and a line saying what that
+  // switch does, then the section's cards, which fold away while it is off.
+  component SettingsSection: Column {
+    id: section
+    property string title: ""
+    property string description: ""
+    property bool checked: true
+    property bool hasSwitch: true
+    property string fontFamily: Style.font.family
+    default property alias content: sectionContent.data
+    signal toggled()
+
+    width: parent ? parent.width : 0
+    spacing: Style.spacing.lg
+
+    Item {
+      width: parent.width
+      height: Math.max(sectionHead.implicitHeight, sectionSwitch.height)
+
+      Column {
+        id: sectionHead
+        anchors.left: parent.left
+        anchors.right: sectionSwitch.left
+        anchors.rightMargin: Style.spacing.rowPaddingX
+        anchors.verticalCenter: parent.verticalCenter
+        spacing: Style.spacing.xs
+
+        Text {
+          width: parent.width
+          textFormat: Text.PlainText
+          text: section.title
+          color: Commons.Color.accent
+          font.family: section.fontFamily
+          font.pixelSize: Style.font.subtitle
+          font.bold: true
+        }
+
+        Text {
+          width: parent.width
+          visible: section.description !== ""
+          textFormat: Text.PlainText
+          text: section.description
+          color: Qt.darker(Commons.Color.foreground, 1.5)
+          font.family: section.fontFamily
+          font.pixelSize: Style.font.caption
+          wrapMode: Text.WordWrap
+        }
+      }
+
+      ToggleSwitch {
+        id: sectionSwitch
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+        visible: section.hasSwitch
+        width: visible ? implicitWidth : 0
+        checked: section.checked
+        onToggled: section.toggled()
+      }
+    }
+
+    Column {
+      id: sectionContent
+      width: parent.width
+      spacing: Style.spacing.lg
+      visible: section.checked || !section.hasSwitch
+    }
   }
 
   // A settings card in the look of Toggle: title and description on the
@@ -1045,29 +1107,36 @@ Panel {
         // --- settings -------------------------------------------------------
 
         // One card per setting, each written as soon as it changes: there is no
-        // Save, the way there is none anywhere else in the shell. Sections are
-        // spaced apart and headed in the accent, so a card never reads as a
-        // heading of its own.
+        // Save, the way there is none anywhere else in the shell. Sound and
+        // Snooze carry their on/off switch in their title.
         Column {
           width: parent.width
           visible: root.view === "settings"
           spacing: Style.space(14)
 
-          Column {
-            width: parent.width
-            spacing: Style.spacing.lg
+          SettingsSection {
+            title: "Bar"
+            hasSwitch: false
+            fontFamily: root.fontFamily
 
-            SettingsHeader { text: "Bar" }
-
-            Toggle {
-              width: parent.width
-              label: "Hide when idle"
-              description: "With no alarm set, show the icon only while the pointer is on the bar"
-              checked: root.hideWhenIdle
-              foreground: root.foreground
-              accent: root.accent
+            // The icon is always in the bar; with no alarm set, this says
+            // whether it shows all the time or only on hover.
+            SettingCard {
               fontFamily: root.fontFamily
-              onClicked: root.writeSetting("hideWhenIdle", !root.hideWhenIdle)
+              label: "Show the icon"
+              description: "With no alarm set"
+
+              ButtonGroup {
+                value: root.hideWhenIdle ? "hover" : "always"
+                foreground: root.foreground
+                accent: root.accent
+                fontFamily: root.fontFamily
+                options: [
+                  { value: "always", label: "Always" },
+                  { value: "hover", label: "On hover" }
+                ]
+                onChanged: function(value) { root.writeSetting("hideWhenIdle", value === "hover") }
+              }
             }
 
             // A few glyphs that read as "alarm", the timer first because it is
@@ -1085,37 +1154,26 @@ Panel {
                 fontSize: Style.bar.iconFont
                 options: [
                   { value: "", label: root.iconTimer, tooltip: "Timer" },
-                  { value: "󰢌", label: "󰢌", tooltip: "Omarchy reminder" },
-                  { value: "󰀠", label: "󰀠", tooltip: "Alarm clock" },
-                  { value: "󰂚", label: "󰂚", tooltip: "Bell" }
+                  { value: "\uDB82\uDC8C", label: "\uDB82\uDC8C", tooltip: "Omarchy reminder" },
+                  { value: "\uDB80\uDC20", label: "\uDB80\uDC20", tooltip: "Alarm clock" },
+                  { value: "\uDB80\uDC9A", label: "\uDB80\uDC9A", tooltip: "Bell" }
                 ]
                 onChanged: function(value) { root.writeSetting("icon", value) }
               }
             }
           }
 
-          Column {
-            width: parent.width
-            spacing: Style.spacing.lg
+          // The file and how often it plays only matter with a sound, so they
+          // fold away with it.
+          SettingsSection {
+            title: "Sound"
+            description: root.soundOn ? "Plays when an alarm goes off" : "Alarms ring silently, in the bar and the notification"
+            checked: root.soundOn
+            fontFamily: root.fontFamily
+            onToggled: root.writeSetting("soundOn", !root.soundOn)
 
-            SettingsHeader { text: "Sound" }
-
-            Toggle {
-              width: parent.width
-              label: "Play a sound"
-              description: root.soundOn ? "When an alarm goes off" : "Alarms ring silently, in the bar and the notification"
-              checked: root.soundOn
-              foreground: root.foreground
-              accent: root.accent
-              fontFamily: root.fontFamily
-              onClicked: root.writeSetting("soundOn", !root.soundOn)
-            }
-
-            // The file and how often it plays only matter with a sound, so they
-            // fold away with it.
             SettingCard {
               fontFamily: root.fontFamily
-              visible: root.soundOn
               label: "Sound file"
               description: "Add your own sounds to " + root.soundsDir.replace(Quickshell.env("HOME"), "~")
 
@@ -1140,7 +1198,7 @@ Panel {
                   id: browseButton
                   anchors.verticalCenter: parent.verticalCenter
                   bordered: true
-                  text: "Browse…"
+                  text: "Browse\u2026"
                   foreground: root.foreground
                   accent: root.accent
                   fontFamily: root.fontFamily
@@ -1148,8 +1206,8 @@ Panel {
                 }
 
                 // Hear it before an alarm does, and stop it again. Plays what
-                // is in the field, saved or not, and falls back the way bin/nag
-                // does.
+                // is in the field, saved or not, and falls back the way
+                // bin/nag does.
                 PanelActionButton {
                   id: playButton
                   anchors.verticalCenter: parent.verticalCenter
@@ -1170,7 +1228,6 @@ Panel {
 
             Toggle {
               width: parent.width
-              visible: root.soundOn
               label: "Repeat until answered"
               description: !root.soundRepeat ? "Plays once" : root.snoozeOn ? "Plays again until you snooze or dismiss" : "Plays again until you dismiss"
               checked: root.soundRepeat
@@ -1182,7 +1239,7 @@ Panel {
 
             SettingCard {
               fontFamily: root.fontFamily
-              visible: root.soundOn && root.soundRepeat
+              visible: root.soundRepeat
               label: "Pause between plays"
               description: "Seconds of silence before it plays again"
 
@@ -1198,26 +1255,15 @@ Panel {
             }
           }
 
-          Column {
-            width: parent.width
-            spacing: Style.spacing.lg
-
-            SettingsHeader { text: "Snooze" }
-
-            Toggle {
-              width: parent.width
-              label: "Allow snooze"
-              description: root.snoozeOn ? "A snooze button in the panel and the notification" : "Ringing alarms can only be dismissed"
-              checked: root.snoozeOn
-              foreground: root.foreground
-              accent: root.accent
-              fontFamily: root.fontFamily
-              onClicked: root.writeSetting("snoozeOn", !root.snoozeOn)
-            }
+          SettingsSection {
+            title: "Snooze"
+            description: root.snoozeOn ? "A snooze button in the panel and the notification" : "Ringing alarms can only be dismissed"
+            checked: root.snoozeOn
+            fontFamily: root.fontFamily
+            onToggled: root.writeSetting("snoozeOn", !root.snoozeOn)
 
             SettingCard {
               fontFamily: root.fontFamily
-              visible: root.snoozeOn
               label: "Snooze length"
               description: "Minutes a snooze puts the alarm off"
 

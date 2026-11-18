@@ -73,6 +73,10 @@ Panel {
   readonly property bool soundRepeat: setting("soundRepeat", true) !== false
   readonly property string soundPath: String(setting("sound", "") || "")
 
+  // Off, a ringing alarm can only be dismissed: no snooze button in the
+  // panel or the notification.
+  readonly property bool snoozeOn: setting("snoozeOn", true) !== false
+
   // Minutes a snooze puts an alarm off, from the panel and the notification.
   readonly property int snoozeMinutes: {
     var minutes = Number(setting("snoozeMinutes", 5))
@@ -748,10 +752,14 @@ Panel {
             case Qt.Key_Return:
             case Qt.Key_Enter:
               // On a ringing row Enter is snooze, which is the only thing worth
-              // one key when an alarm is going off in front of you.
+              // one key when an alarm is going off in front of you; with snooze
+              // off, it is dismiss, the only answer left.
               if (onRow) {
                 var alarm = root.cursorAlarm()
-                if (alarm && alarm.ringing) root.snoozeAlarm(alarm.id, root.snoozeMinutes)
+                if (alarm && alarm.ringing) {
+                  if (root.snoozeOn) root.snoozeAlarm(alarm.id, root.snoozeMinutes)
+                  else root.dismissAlarm(alarm.id)
+                }
               } else {
                 root.setAlarm()
               }
@@ -913,7 +921,7 @@ Panel {
 
                   PanelActionButton {
                     anchors.verticalCenter: parent.verticalCenter
-                    visible: modelData.ringing
+                    visible: modelData.ringing && root.snoozeOn
                     focusable: false
                     iconText: root.iconSnooze
                     tooltipText: "Snooze " + root.snoozeMinutes + " minutes"
@@ -1069,7 +1077,7 @@ Panel {
             Toggle {
               width: parent.width
               label: "Repeat until answered"
-              description: root.soundRepeat ? "Plays again until you snooze or dismiss" : "Plays once"
+              description: !root.soundRepeat ? "Plays once" : root.snoozeOn ? "Plays again until you snooze or dismiss" : "Plays again until you dismiss"
               checked: root.soundRepeat
               foreground: root.foreground
               accent: root.accent
@@ -1086,7 +1094,19 @@ Panel {
             fontFamily: root.fontFamily
           }
 
+          Toggle {
+            width: parent.width
+            label: "Allow snooze"
+            description: root.snoozeOn ? "A snooze button in the panel and the notification" : "Ringing alarms can only be dismissed"
+            checked: root.snoozeOn
+            foreground: root.foreground
+            accent: root.accent
+            fontFamily: root.fontFamily
+            onClicked: root.writeSetting("snoozeOn", !root.snoozeOn)
+          }
+
           NumberField {
+            visible: root.snoozeOn
             label: "Minutes"
             from: 1
             to: 1440

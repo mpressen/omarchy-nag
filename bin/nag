@@ -803,8 +803,13 @@ ring() {
     pw-play -- "$sound" >/dev/null 2>&1 || true
     return 0
   fi
+  # `soundPause`: seconds of silence between two plays, 0 to 60.
+  local pause
+  pause=$(widget_setting soundPause)
+  if [[ $pause =~ ^[0-9]{1,2}$ ]] && ((10#$pause <= 60)); then pause=$((10#$pause)); else pause=0; fi
   while [[ -f $RING_DIR/$id.json ]]; do
     pw-play -- "$sound" >/dev/null 2>&1 || break
+    if ((pause > 0)); then sleep "$pause"; fi
   done
 }
 

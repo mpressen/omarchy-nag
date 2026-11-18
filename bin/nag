@@ -755,20 +755,25 @@ cmd_fire() {
   headline=$(strip_markup "$message")
   headline=${headline:-Alarm}
   # The buttons answer the alarm without opening the panel; clicking the card
-  # runs the first, so it snoozes, or dismisses with snooze off. Their words
+  # runs the first, so it snoozes. Their words
   # are constants and the id goes after --with, so the message never reaches a
   # command. Shells older than Omarchy 4.5 have no --action and get the
   # click-to-open card instead.
   local when
   when=$(date -d "@$at" '+%H:%M')
-  local actions=()
-  snooze_on && actions+=(--action "Snooze $(snooze_minutes) min" "$SELF" snooze)
-  actions+=(--action "Dismiss" "$SELF" dismiss)
+  # With snooze off, dismiss is the only answer left, so the card has no
+  # button: clicking it or its X dismisses.
+  local answer=()
+  if snooze_on; then
+    answer=(--action "Snooze $(snooze_minutes) min" "$SELF" snooze --action "Dismiss" "$SELF" dismiss --with "$id")
+  else
+    answer=(--exec "$SELF" dismiss "$id")
+  fi
   local nid=""
   if nid=$(omarchy-notification-send -p -u critical -g "$(glyph)" "$headline" "$when" \
-    "${actions[@]}" --with "$id" 2>/dev/null); then
-    # Only with buttons: on an older shell, clicking the card opens the panel
-    # and closes it with the same reason, which must not dismiss anything.
+    "${answer[@]}" 2>/dev/null); then
+    # Not for the fallback below: on an older shell, clicking that card opens
+    # the panel and closes it with the same reason, which must not dismiss.
     [[ $nid =~ ^[0-9]+$ ]] && watch_close "$id" "$nid" &
   else
     omarchy-notification-send -u critical -g "$(glyph)" "$headline" "$when" \

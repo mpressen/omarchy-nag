@@ -59,6 +59,7 @@ Panel {
   readonly property string iconSettings: "\uF013"
   readonly property string iconBack: "\uF060"
   readonly property string iconPlay: "\uF04B"
+  readonly property string iconStop: "\uF04D"
 
   // The sound settings, as bin/nag reads them when an alarm goes off.
   readonly property string defaultSound: "/usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga"
@@ -322,6 +323,7 @@ Panel {
       'exec zenity --file-selection --title="Alarm sound" --filename="$start" ' +
       '--file-filter="Audio | *.oga *.ogg *.opus *.wav *.flac *.mp3" --file-filter="All files | *"',
       "nag-sound", soundsDir, start].concat(seedSounds)
+    soundPreview.running = false
     soundChooser.running = true
     reopenOnSettings = true
     close()
@@ -361,6 +363,93 @@ Panel {
   property string listBuf: ""
   property string parseBuf: ""
   property string actionBuf: ""
+
+  // The ▶ preview in the settings. A new file, the chooser opening or the
+  // panel closing stops it, so a test never plays on over the next one.
+  Process { id: soundPreview }
+  onSoundPathChanged: soundPreview.running = false
+
+  // A section title in the settings: in the accent, so it stands apart from
+  // the cards' own titles.
+  component SettingsHeader: PanelSectionHeader {
+    color: Commons.Color.accent
+    fontSize: Style.font.bodySmall
+  }
+
+  // A settings card in the look of Toggle: title and description on the
+  // left, the control (the default property) on the right, and an optional
+  // full-width control under the text.
+  component SettingCard: BorderSurface {
+    id: card
+    property string label: ""
+    property string description: ""
+    property string fontFamily: Style.font.family
+    default property alias side: sideSlot.data
+    property alias below: belowSlot.data
+
+    width: parent ? parent.width : 0
+    implicitHeight: Math.max(54, body.implicitHeight + Style.spacing.huge)
+    radius: Style.cornerRadius
+    color: Style.controlFill(false, false, Commons.Color.foreground, Commons.Color.accent)
+    borderSpec: Border.controlSpec("normal", Commons.Color.foreground, Commons.Color.accent)
+
+    Column {
+      id: body
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.leftMargin: card.borderLeft + Style.spacing.rowPaddingX
+      anchors.rightMargin: card.borderRight + Style.spacing.rowPaddingX
+      spacing: Style.spacing.lg
+
+      Row {
+        width: parent.width
+        spacing: Style.spacing.rowPaddingX
+
+        Column {
+          width: parent.width - sideSlot.width - (sideSlot.width > 0 ? parent.spacing : 0)
+          anchors.verticalCenter: parent.verticalCenter
+          spacing: Style.spacing.xs
+
+          Text {
+            width: parent.width
+            textFormat: Text.PlainText
+            text: card.label
+            color: Commons.Color.foreground
+            font.family: card.fontFamily
+            font.pixelSize: Style.font.subtitle
+            font.bold: true
+            elide: Text.ElideRight
+          }
+
+          Text {
+            width: parent.width
+            visible: card.description !== ""
+            textFormat: Text.PlainText
+            text: card.description
+            color: Qt.darker(Commons.Color.foreground, 1.5)
+            font.family: card.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+        }
+
+        Item {
+          id: sideSlot
+          anchors.verticalCenter: parent.verticalCenter
+          width: childrenRect.width
+          height: childrenRect.height
+        }
+      }
+
+      Item {
+        id: belowSlot
+        width: parent.width
+        height: childrenRect.height
+        visible: children.length > 0
+      }
+    }
+  }
 
   // zenity prints the chosen path on one line, and nothing on cancel.
   Process {
@@ -510,7 +599,7 @@ Panel {
   Component.onCompleted: refresh()
 
   onOpenedChanged: {
-    if (!opened) return
+    if (!opened) { soundPreview.running = false; return }
     refresh()
 
     // Open on an empty field. A half-typed alarm you walked away from is not
@@ -955,132 +1044,133 @@ Panel {
 
         // --- settings -------------------------------------------------------
 
-        // One row per setting, each written as soon as it changes: there is no
-        // Save, the way there is none anywhere else in the shell.
+        // One card per setting, each written as soon as it changes: there is no
+        // Save, the way there is none anywhere else in the shell. Sections are
+        // spaced apart and headed in the accent, so a card never reads as a
+        // heading of its own.
         Column {
           width: parent.width
           visible: root.view === "settings"
-          spacing: Style.space(4)
+          spacing: Style.space(14)
 
-          Toggle {
-            width: parent.width
-            label: "Hide when idle"
-            description: "With no alarm set, show the icon only while the pointer is on the bar"
-            checked: root.hideWhenIdle
-            foreground: root.foreground
-            accent: root.accent
-            fontFamily: root.fontFamily
-            onClicked: root.writeSetting("hideWhenIdle", !root.hideWhenIdle)
-          }
-
-          PanelSeparator { width: parent.width }
-
-          PanelSectionHeader {
-            text: "Icon"
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-          }
-
-          // A few glyphs that read as "alarm", the timer first because it is
-          // the default and is stored as no setting at all.
-          ButtonGroup {
-            value: String(root.setting("icon", "") || "")
-            foreground: root.foreground
-            accent: root.accent
-            fontFamily: root.fontFamily
-            fontSize: Style.bar.iconFont
-            options: [
-              { value: "", label: root.iconTimer, tooltip: "Timer" },
-              { value: "\uDB82\uDC8C", label: "\uDB82\uDC8C", tooltip: "Omarchy reminder" },
-              { value: "\uDB80\uDC20", label: "\uDB80\uDC20", tooltip: "Alarm clock" },
-              { value: "\uDB80\uDC9A", label: "\uDB80\uDC9A", tooltip: "Bell" }
-            ]
-            onChanged: function(value) { root.writeSetting("icon", value) }
-          }
-
-          PanelSeparator { width: parent.width }
-
-          PanelSectionHeader {
-            text: "Sound"
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-          }
-
-          Toggle {
-            width: parent.width
-            label: "Play a sound"
-            description: root.soundOn ? "When an alarm goes off" : "Alarms ring silently, in the bar and the notification"
-            checked: root.soundOn
-            foreground: root.foreground
-            accent: root.accent
-            fontFamily: root.fontFamily
-            onClicked: root.writeSetting("soundOn", !root.soundOn)
-          }
-
-          // The file and how often it plays only matter with a sound, so they
-          // fold away with it.
           Column {
             width: parent.width
-            visible: root.soundOn
-            spacing: Style.space(4)
+            spacing: Style.spacing.lg
 
-            Row {
+            SettingsHeader { text: "Bar" }
+
+            Toggle {
               width: parent.width
-              spacing: Style.space(4)
+              label: "Hide when idle"
+              description: "With no alarm set, show the icon only while the pointer is on the bar"
+              checked: root.hideWhenIdle
+              foreground: root.foreground
+              accent: root.accent
+              fontFamily: root.fontFamily
+              onClicked: root.writeSetting("hideWhenIdle", !root.hideWhenIdle)
+            }
 
-              TextField {
-                id: soundField
-                width: parent.width - browseButton.width - playButton.width - parent.spacing * 2
-                anchors.verticalCenter: parent.verticalCenter
-                foreground: root.foreground
-                accent: root.accent
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.body
-                placeholderText: root.defaultSound.replace(/^\/usr\/share\/sounds\//, "")
-                text: root.soundPath
-                onEditingFinished: if (text.trim() !== root.soundPath) root.writeSetting("sound", text.trim())
-              }
+            // A few glyphs that read as "alarm", the timer first because it is
+            // the default and is stored as no setting at all.
+            SettingCard {
+              fontFamily: root.fontFamily
+              label: "Icon"
+              description: "In the bar and on the notification"
 
-              Button {
-                id: browseButton
-                anchors.verticalCenter: parent.verticalCenter
-                bordered: true
-                text: "Browse\u2026"
+              ButtonGroup {
+                value: String(root.setting("icon", "") || "")
                 foreground: root.foreground
                 accent: root.accent
                 fontFamily: root.fontFamily
-                onClicked: root.chooseSound()
+                fontSize: Style.bar.iconFont
+                options: [
+                  { value: "", label: root.iconTimer, tooltip: "Timer" },
+                  { value: "󰢌", label: "󰢌", tooltip: "Omarchy reminder" },
+                  { value: "󰀠", label: "󰀠", tooltip: "Alarm clock" },
+                  { value: "󰂚", label: "󰂚", tooltip: "Bell" }
+                ]
+                onChanged: function(value) { root.writeSetting("icon", value) }
               }
+            }
+          }
 
-              // Hear it before an alarm does. Plays what is in the field, saved
-              // or not, and falls back the way bin/nag does.
-              PanelActionButton {
-                id: playButton
-                anchors.verticalCenter: parent.verticalCenter
-                focusable: false
-                iconText: root.iconPlay
-                tooltipText: "Play"
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                onClicked: {
-                  var path = soundField.text.trim().replace(/^~(?=\/)/, Quickshell.env("HOME"))
-                  Quickshell.execDetached(["pw-play", "--", path.length > 0 ? path : root.defaultSound])
+          Column {
+            width: parent.width
+            spacing: Style.spacing.lg
+
+            SettingsHeader { text: "Sound" }
+
+            Toggle {
+              width: parent.width
+              label: "Play a sound"
+              description: root.soundOn ? "When an alarm goes off" : "Alarms ring silently, in the bar and the notification"
+              checked: root.soundOn
+              foreground: root.foreground
+              accent: root.accent
+              fontFamily: root.fontFamily
+              onClicked: root.writeSetting("soundOn", !root.soundOn)
+            }
+
+            // The file and how often it plays only matter with a sound, so they
+            // fold away with it.
+            SettingCard {
+              fontFamily: root.fontFamily
+              visible: root.soundOn
+              label: "Sound file"
+              description: "Add your own sounds to " + root.soundsDir.replace(Quickshell.env("HOME"), "~")
+
+              below: Row {
+                width: parent.width
+                spacing: Style.space(4)
+
+                TextField {
+                  id: soundField
+                  width: parent.width - browseButton.width - playButton.width - parent.spacing * 2
+                  anchors.verticalCenter: parent.verticalCenter
+                  foreground: root.foreground
+                  accent: root.accent
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                  placeholderText: root.defaultSound.replace(/^\/usr\/share\/sounds\//, "")
+                  text: root.soundPath
+                  onEditingFinished: if (text.trim() !== root.soundPath) root.writeSetting("sound", text.trim())
+                }
+
+                Button {
+                  id: browseButton
+                  anchors.verticalCenter: parent.verticalCenter
+                  bordered: true
+                  text: "Browse…"
+                  foreground: root.foreground
+                  accent: root.accent
+                  fontFamily: root.fontFamily
+                  onClicked: root.chooseSound()
+                }
+
+                // Hear it before an alarm does, and stop it again. Plays what
+                // is in the field, saved or not, and falls back the way bin/nag
+                // does.
+                PanelActionButton {
+                  id: playButton
+                  anchors.verticalCenter: parent.verticalCenter
+                  focusable: false
+                  iconText: soundPreview.running ? root.iconStop : root.iconPlay
+                  tooltipText: soundPreview.running ? "Stop" : "Play"
+                  foreground: soundPreview.running ? root.accent : root.foreground
+                  fontFamily: root.fontFamily
+                  onClicked: {
+                    if (soundPreview.running) { soundPreview.running = false; return }
+                    var path = soundField.text.trim().replace(/^~(?=\/)/, Quickshell.env("HOME"))
+                    soundPreview.command = ["pw-play", "--", path.length > 0 ? path : root.defaultSound]
+                    soundPreview.running = true
+                  }
                 }
               }
             }
 
-            Text {
-              width: parent.width
-              textFormat: Text.PlainText
-              wrapMode: Text.Wrap
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              color: Qt.darker(root.foreground, 1.6)
-              text: "Add your own sounds to " + root.soundsDir.replace(Quickshell.env("HOME"), "~")
-            }
-
             Toggle {
               width: parent.width
+              visible: root.soundOn
               label: "Repeat until answered"
               description: !root.soundRepeat ? "Plays once" : root.snoozeOn ? "Plays again until you snooze or dismiss" : "Plays again until you dismiss"
               checked: root.soundRepeat
@@ -1090,48 +1180,57 @@ Panel {
               onClicked: root.writeSetting("soundRepeat", !root.soundRepeat)
             }
 
-            NumberField {
-              visible: root.soundRepeat
-              label: "Pause between plays (seconds)"
-              from: 0
-              to: 60
-              value: root.soundPause
-              foreground: root.foreground
-              accent: root.accent
+            SettingCard {
               fontFamily: root.fontFamily
-              onModified: function(value) { root.writeSetting("soundPause", value) }
+              visible: root.soundOn && root.soundRepeat
+              label: "Pause between plays"
+              description: "Seconds of silence before it plays again"
+
+              NumberField {
+                from: 0
+                to: 60
+                value: root.soundPause
+                foreground: root.foreground
+                accent: root.accent
+                fontFamily: root.fontFamily
+                onModified: function(value) { root.writeSetting("soundPause", value) }
+              }
             }
           }
 
-          PanelSeparator { width: parent.width }
-
-          PanelSectionHeader {
-            text: "Snooze"
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-          }
-
-          Toggle {
+          Column {
             width: parent.width
-            label: "Allow snooze"
-            description: root.snoozeOn ? "A snooze button in the panel and the notification" : "Ringing alarms can only be dismissed"
-            checked: root.snoozeOn
-            foreground: root.foreground
-            accent: root.accent
-            fontFamily: root.fontFamily
-            onClicked: root.writeSetting("snoozeOn", !root.snoozeOn)
-          }
+            spacing: Style.spacing.lg
 
-          NumberField {
-            visible: root.snoozeOn
-            label: "Minutes"
-            from: 1
-            to: 1440
-            value: root.snoozeMinutes
-            foreground: root.foreground
-            accent: root.accent
-            fontFamily: root.fontFamily
-            onModified: function(value) { root.writeSetting("snoozeMinutes", value) }
+            SettingsHeader { text: "Snooze" }
+
+            Toggle {
+              width: parent.width
+              label: "Allow snooze"
+              description: root.snoozeOn ? "A snooze button in the panel and the notification" : "Ringing alarms can only be dismissed"
+              checked: root.snoozeOn
+              foreground: root.foreground
+              accent: root.accent
+              fontFamily: root.fontFamily
+              onClicked: root.writeSetting("snoozeOn", !root.snoozeOn)
+            }
+
+            SettingCard {
+              fontFamily: root.fontFamily
+              visible: root.snoozeOn
+              label: "Snooze length"
+              description: "Minutes a snooze puts the alarm off"
+
+              NumberField {
+                from: 1
+                to: 1440
+                value: root.snoozeMinutes
+                foreground: root.foreground
+                accent: root.accent
+                fontFamily: root.fontFamily
+                onModified: function(value) { root.writeSetting("snoozeMinutes", value) }
+              }
+            }
           }
         }
       }

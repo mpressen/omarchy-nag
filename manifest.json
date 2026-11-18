@@ -54,6 +54,16 @@
         "defaultValue": true
       },
       {
+        "key": "soundPause",
+        "type": "integer",
+        "label": "Pause between plays",
+        "description": "Seconds of silence between two plays of a repeating sound.",
+        "min": 0,
+        "max": 60,
+        "step": 1,
+        "defaultValue": 0
+      },
+      {
         "key": "snoozeOn",
         "type": "boolean",
         "label": "Allow snooze",

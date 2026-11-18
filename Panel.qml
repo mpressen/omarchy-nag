@@ -71,6 +71,11 @@ Panel {
     "/usr/share/sounds/freedesktop/stereo/phone-incoming-call.oga"]
   readonly property bool soundOn: setting("soundOn", true) !== false
   readonly property bool soundRepeat: setting("soundRepeat", true) !== false
+  // Seconds of silence between two plays of a repeating sound.
+  readonly property int soundPause: {
+    var seconds = Number(setting("soundPause", 0))
+    return seconds >= 0 && seconds <= 60 ? Math.floor(seconds) : 0
+  }
   readonly property string soundPath: String(setting("sound", "") || "")
 
   // Off, a ringing alarm can only be dismissed: no snooze button in the
@@ -1083,6 +1088,18 @@ Panel {
               accent: root.accent
               fontFamily: root.fontFamily
               onClicked: root.writeSetting("soundRepeat", !root.soundRepeat)
+            }
+
+            NumberField {
+              visible: root.soundRepeat
+              label: "Pause between plays (seconds)"
+              from: 0
+              to: 60
+              value: root.soundPause
+              foreground: root.foreground
+              accent: root.accent
+              fontFamily: root.fontFamily
+              onModified: function(value) { root.writeSetting("soundPause", value) }
             }
           }
 

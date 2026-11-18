@@ -63,12 +63,12 @@ Panel {
   // The sound settings, as bin/nag reads them when an alarm goes off.
   readonly property string defaultSound: "/usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga"
   // Nag's own sounds folder, where Browse… opens. The first Browse creates it
-  // with copies of the default alarm and two other freedesktop candidates;
+  // with copies of the default alarm and the phone ring, the only other
+  // freedesktop sound long enough to wake anyone (bell.oga is a 0.2 s ding);
   // more sounds are added by dropping files into it.
   readonly property string soundsDir: (Quickshell.env("XDG_DATA_HOME") || Quickshell.env("HOME") + "/.local/share") + "/nag/sounds"
   readonly property var seedSounds: [defaultSound,
-    "/usr/share/sounds/freedesktop/stereo/phone-incoming-call.oga",
-    "/usr/share/sounds/freedesktop/stereo/bell.oga"]
+    "/usr/share/sounds/freedesktop/stereo/phone-incoming-call.oga"]
   readonly property bool soundOn: setting("soundOn", true) !== false
   readonly property bool soundRepeat: setting("soundRepeat", true) !== false
   readonly property string soundPath: String(setting("sound", "") || "")

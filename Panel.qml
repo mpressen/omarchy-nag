@@ -77,8 +77,11 @@ Panel {
   readonly property var soundOptions: {
     var options = [{ value: "", label: "Default alarm" }]
     var listed = soundPath === ""
+    var defaultName = defaultSound.split("/").pop()
     for (var i = 0; i < soundsModel.count; i++) {
       var path = String(soundsModel.get(i, "filePath"))
+      // The copy of the default is already the first row.
+      if (String(soundsModel.get(i, "fileName")) === defaultName && path !== soundPath) continue
       options.push({ value: path, label: String(soundsModel.get(i, "fileName")) })
       if (path === soundPath) listed = true
     }
@@ -301,9 +304,13 @@ Panel {
   // so the panel writes them the way `omarchy bar set` does from a terminal and
   // reads them back through setting().
   // In the file manager, created first so there is somewhere to drop the
-  // files. The panel closes because the file manager is where the work is.
+  // files, and given a copy of the default alarm while it is empty, so the
+  // folder opens on the sound that plays now rather than on nothing. The panel
+  // closes because the file manager is where the work is.
   function openSoundsDir() {
-    Quickshell.execDetached(["bash", "-lc", 'mkdir -p -- "$1" && exec uwsm-app -- xdg-open "$1"', "bash", soundsDir])
+    Quickshell.execDetached(["bash", "-lc",
+      'mkdir -p -- "$1" && { [[ -n $(ls -A -- "$1") ]] || cp -n -- "$2" "$1/"; }; exec uwsm-app -- xdg-open "$1"',
+      "bash", soundsDir, defaultSound])
     close()
   }
 

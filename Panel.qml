@@ -89,6 +89,12 @@ Panel {
     return options
   }
 
+  // Minutes a snooze puts an alarm off, from the panel and the notification.
+  readonly property int snoozeMinutes: {
+    var minutes = Number(setting("snoozeMinutes", 5))
+    return minutes >= 1 && minutes <= 1440 ? Math.floor(minutes) : 5
+  }
+
   readonly property color foreground: bar ? bar.foreground : Commons.Color.foreground
   readonly property color accent: Commons.Color.accent
   readonly property color urgent: bar ? bar.urgent : Commons.Color.urgent
@@ -756,7 +762,7 @@ Panel {
               // one key when an alarm is going off in front of you.
               if (onRow) {
                 var alarm = root.cursorAlarm()
-                if (alarm && alarm.ringing) root.snoozeAlarm(alarm.id, 5)
+                if (alarm && alarm.ringing) root.snoozeAlarm(alarm.id, root.snoozeMinutes)
               } else {
                 root.setAlarm()
               }
@@ -921,10 +927,10 @@ Panel {
                     visible: modelData.ringing
                     focusable: false
                     iconText: root.iconSnooze
-                    tooltipText: "Snooze 5 minutes"
+                    tooltipText: "Snooze " + root.snoozeMinutes + " minutes"
                     foreground: rowColor
                     fontFamily: root.fontFamily
-                    onClicked: root.snoozeAlarm(modelData.id, 5)
+                    onClicked: root.snoozeAlarm(modelData.id, root.snoozeMinutes)
                   }
 
                   PanelActionButton {
@@ -1070,6 +1076,25 @@ Panel {
               fontFamily: root.fontFamily
               onClicked: root.writeSetting("soundRepeat", !root.soundRepeat)
             }
+          }
+
+          PanelSeparator { width: parent.width }
+
+          PanelSectionHeader {
+            text: "Snooze"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+          }
+
+          NumberField {
+            label: "Minutes"
+            from: 1
+            to: 1440
+            value: root.snoozeMinutes
+            foreground: root.foreground
+            accent: root.accent
+            fontFamily: root.fontFamily
+            onModified: function(value) { root.writeSetting("snoozeMinutes", value) }
           }
         }
       }

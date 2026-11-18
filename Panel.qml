@@ -92,6 +92,8 @@ Panel {
   // "alarms" or "settings": what the card shows. The gear at its top left
   // swaps one for the other, and every open starts on the alarms.
   property string view: "alarms"
+  // Set while the file chooser is up, so the reopen lands on the settings.
+  property bool reopenOnSettings: false
   property var preview: null
   property string actionError: ""
   // Set when Enter finds no time in the draft, cleared by the next keystroke.
@@ -293,7 +295,8 @@ Panel {
   // reads them back through setting().
   // A file chooser, opened where the current sound is (the freedesktop folder
   // for the default, which holds a few other candidates). The panel closes
-  // so the chooser gets the keyboard; the pick is saved when it comes back.
+  // so the chooser gets the keyboard; the pick is saved when it comes back,
+  // and the panel reopens on the settings, where ▶ can try it.
   function chooseSound() {
     var current = soundPath.replace(/^~(?=\/)/, Quickshell.env("HOME")) || defaultSound
     soundChooser.command = ["zenity", "--file-selection", "--title=Alarm sound",
@@ -301,6 +304,7 @@ Panel {
       "--file-filter=Audio | *.oga *.ogg *.opus *.wav *.flac *.mp3",
       "--file-filter=All files | *"]
     soundChooser.running = true
+    reopenOnSettings = true
     close()
   }
 
@@ -348,6 +352,8 @@ Panel {
         if (path.length > 0 && path.length <= 4096) root.writeSetting("sound", path)
       }
     }
+    // Picked or cancelled, back to the settings the chooser was opened from.
+    onExited: root.open()
   }
 
   // Returns the buffer with the chunk appended, or a null when the budget is
@@ -496,7 +502,8 @@ Panel {
     actionError = ""
     missingTime = false
     cursor = -1
-    view = "alarms"
+    view = reopenOnSettings ? "settings" : "alarms"
+    reopenOnSettings = false
 
     // A new example every time the panel opens, rather than on a timer. Over a
     // week you see all of them, and the line never moves while you are reading
@@ -576,9 +583,9 @@ Panel {
     shown: root.opened
     WlrLayershell.namespace: "jankeesvw-nag"
 
-    // The panel opens ready to type, which is the only interaction it has. The
-    // surface maps a moment after `shown`, so the focus waits for it.
-    onVisibleChanged: if (visible) Qt.callLater(function() { inputField.forceActiveFocus() })
+    // The panel opens ready to type, or on the settings after the file
+    // chooser. The surface maps a moment after `shown`, so the focus waits.
+    onVisibleChanged: if (visible) Qt.callLater(function() { root.showView(root.view) })
 
     Rectangle {
       anchors.fill: parent

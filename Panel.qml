@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
 import qs.Commons
@@ -49,6 +50,8 @@ Panel {
   readonly property string iconTimer: "\uDB81\uDD1F"
   readonly property string iconClose: "\uF00D"
   readonly property string iconSnooze: "\uF186"
+  readonly property string iconSettings: "\uF013"
+  readonly property string iconBack: "\uF060"
 
   readonly property color foreground: bar ? bar.foreground : Commons.Color.foreground
   readonly property color accent: Commons.Color.accent
@@ -67,6 +70,9 @@ Panel {
   property int nowSeconds: Math.floor(Date.now() / 1000)
 
   property string draft: ""
+  // "alarms" or "settings": what the card shows. The gear at its top left
+  // swaps one for the other, and every open starts on the alarms.
+  property string view: "alarms"
   property var preview: null
   property string actionError: ""
 
@@ -258,6 +264,19 @@ Panel {
   function dismissAlarm(id) { runAction(["dismiss", String(id)]) }
   function snoozeAlarm(id, minutes) { runAction(["snooze", String(id), String(minutes)]) }
 
+  // Settings live in this widget's entry in shell.json, like any bar widget's,
+  // so the panel writes them the way `omarchy bar set` does from a terminal and
+  // reads them back through setting().
+  function writeSetting(key, value) {
+    Quickshell.execDetached(["omarchy-bar", "set", "jankeesvw.nag", key, JSON.stringify(value), "--json"])
+  }
+
+  function showView(next) {
+    view = next
+    if (next === "alarms") Qt.callLater(function() { inputField.forceActiveFocus() })
+    else keyCatcher.forceActiveFocus()
+  }
+
   function requestPreview() {
     if (draft.trim().length === 0) { preview = null; return }
     previewDebounce.restart()
@@ -428,6 +447,7 @@ Panel {
     preview = null
     actionError = ""
     cursor = -1
+    view = "alarms"
 
     // A new example every time the panel opens, rather than on a timer. Over a
     // week you see all of them, and the line never moves while you are reading
@@ -557,7 +577,9 @@ Panel {
 
       Keys.onPressed: function(event) {
         if (event.key === Qt.Key_Escape) {
-          root.close()
+          // Out of the settings first, then out of the panel.
+          if (root.view === "settings") root.showView("alarms")
+          else root.close()
           event.accepted = true
         }
       }
@@ -570,16 +592,54 @@ Panel {
 
         // --- the field ------------------------------------------------------
 
-        Text {
-          textFormat: Text.PlainText
-          text: "New alarm"
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          color: Qt.darker(root.foreground, 1.5)
+        // The title on the left, with a way back while in the settings; the
+        // gear on the right, where a settings button usually sits.
+        Item {
+          width: parent.width
+          height: gear.height
+
+          Row {
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Style.space(6)
+
+            PanelActionButton {
+              anchors.verticalCenter: parent.verticalCenter
+              visible: root.view === "settings"
+              focusable: false
+              iconText: root.iconBack
+              tooltipText: "Back"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onClicked: root.showView("alarms")
+            }
+
+            Text {
+              anchors.verticalCenter: parent.verticalCenter
+              textFormat: Text.PlainText
+              text: root.view === "settings" ? "Settings" : "New alarm"
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              color: Qt.darker(root.foreground, 1.5)
+            }
+          }
+
+          PanelActionButton {
+            id: gear
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            focusable: false
+            iconText: root.iconSettings
+            tooltipText: root.view === "settings" ? "Back" : "Settings"
+            foreground: root.view === "settings" ? root.accent : root.foreground
+            fontFamily: root.fontFamily
+            onClicked: root.showView(root.view === "settings" ? "alarms" : "settings")
+          }
         }
 
         TextField {
           id: inputField
+          visible: root.view === "alarms"
           width: parent.width
           foreground: root.foreground
           accent: root.accent
@@ -678,7 +738,7 @@ Panel {
           // would move the whole list up and down on the keystroke that makes a
           // time valid. With no list there is nothing to move, and a blank row
           // would only pad the bottom of the panel.
-          visible: root.alarms.length > 0 || text !== " "
+          visible: root.view === "alarms" && (root.alarms.length > 0 || text !== " ")
           text: {
             if (root.actionError !== "") return root.actionError
             if (!root.preview || root.preview.ok !== true) return " "
@@ -693,13 +753,13 @@ Panel {
 
         PanelSeparator {
           width: parent.width
-          visible: root.alarms.length > 0
+          visible: root.view === "alarms" && root.alarms.length > 0
         }
 
         Flickable {
           width: parent.width
           height: Math.min(alarmColumn.implicitHeight, Style.space(360))
-          visible: root.alarms.length > 0
+          visible: root.view === "alarms" && root.alarms.length > 0
           clip: true
           contentWidth: width
           contentHeight: alarmColumn.implicitHeight
@@ -812,6 +872,26 @@ Panel {
           }
         }
 
+        // --- settings -------------------------------------------------------
+
+        // One row per setting, each written as soon as it changes: there is no
+        // Save, the way there is none anywhere else in the shell.
+        Column {
+          width: parent.width
+          visible: root.view === "settings"
+          spacing: Style.space(4)
+
+          Toggle {
+            width: parent.width
+            label: "Hide when idle"
+            description: "With no alarm set, show the icon only while the pointer is on the bar"
+            checked: root.hideWhenIdle
+            foreground: root.foreground
+            accent: root.accent
+            fontFamily: root.fontFamily
+            onClicked: root.writeSetting("hideWhenIdle", !root.hideWhenIdle)
+          }
+        }
       }
     }
   }

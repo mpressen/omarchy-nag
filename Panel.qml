@@ -1,6 +1,5 @@
 import QtQuick
 import QtQuick.Controls
-import Qt.labs.folderlistmodel
 import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
@@ -60,34 +59,12 @@ Panel {
   readonly property string iconSettings: "\uF013"
   readonly property string iconBack: "\uF060"
   readonly property string iconPlay: "\uF04B"
-  readonly property string iconFolder: "\uF07C"
 
   // The sound settings, as bin/nag reads them when an alarm goes off.
   readonly property string defaultSound: "/usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga"
   readonly property bool soundOn: setting("soundOn", true) !== false
   readonly property bool soundRepeat: setting("soundRepeat", true) !== false
   readonly property string soundPath: String(setting("sound", "") || "")
-  // Sound files dropped here are the ones the settings view offers, so picking
-  // a sound is a choice in a list rather than a path typed from memory.
-  readonly property string soundsDir:
-    (Quickshell.env("XDG_DATA_HOME") || Quickshell.env("HOME") + "/.local/share") + "/nag/sounds"
-  // The default first, then the folder, then a file set some other way (from
-  // `omarchy bar set`, or a file since removed), so the list always shows
-  // what is saved.
-  readonly property var soundOptions: {
-    var options = [{ value: "", label: "Default alarm" }]
-    var listed = soundPath === ""
-    var defaultName = defaultSound.split("/").pop()
-    for (var i = 0; i < soundsModel.count; i++) {
-      var path = String(soundsModel.get(i, "filePath"))
-      // The copy of the default is already the first row.
-      if (String(soundsModel.get(i, "fileName")) === defaultName && path !== soundPath) continue
-      options.push({ value: path, label: String(soundsModel.get(i, "fileName")) })
-      if (path === soundPath) listed = true
-    }
-    if (!listed) options.push({ value: soundPath, label: soundPath.split("/").pop() })
-    return options
-  }
 
   // Minutes a snooze puts an alarm off, from the panel and the notification.
   readonly property int snoozeMinutes: {
@@ -314,14 +291,16 @@ Panel {
   // Settings live in this widget's entry in shell.json, like any bar widget's,
   // so the panel writes them the way `omarchy bar set` does from a terminal and
   // reads them back through setting().
-  // In the file manager, created first so there is somewhere to drop the
-  // files, and given a copy of the default alarm while it is empty, so the
-  // folder opens on the sound that plays now rather than on nothing. The panel
-  // closes because the file manager is where the work is.
-  function openSoundsDir() {
-    Quickshell.execDetached(["bash", "-lc",
-      'mkdir -p -- "$1" && { [[ -n $(ls -A -- "$1") ]] || cp -n -- "$2" "$1/"; }; exec uwsm-app -- xdg-open "$1"',
-      "bash", soundsDir, defaultSound])
+  // A file chooser, opened where the current sound is (the freedesktop folder
+  // for the default, which holds a few other candidates). The panel closes
+  // so the chooser gets the keyboard; the pick is saved when it comes back.
+  function chooseSound() {
+    var current = soundPath.replace(/^~(?=\/)/, Quickshell.env("HOME")) || defaultSound
+    soundChooser.command = ["zenity", "--file-selection", "--title=Alarm sound",
+      "--filename=" + current,
+      "--file-filter=Audio | *.oga *.ogg *.opus *.wav *.flac *.mp3",
+      "--file-filter=All files | *"]
+    soundChooser.running = true
     close()
   }
 
@@ -331,12 +310,6 @@ Panel {
 
   function showView(next) {
     view = next
-    // The folder may have been created, or filled, while the panel was shut,
-    // and the model only watches a folder that existed when it was set.
-    if (next === "settings") {
-      soundsModel.folder = ""
-      soundsModel.folder = "file://" + soundsDir
-    }
     if (next === "alarms") Qt.callLater(function() { inputField.forceActiveFocus() })
     else keyCatcher.forceActiveFocus()
   }
@@ -366,16 +339,15 @@ Panel {
   property string parseBuf: ""
   property string actionBuf: ""
 
-  // The files in soundsDir, for the sound picker. Audio only, in the formats
-  // pw-play reads, so a README or a cover image dropped alongside stays out.
-  FolderListModel {
-    id: soundsModel
-    folder: "file://" + root.soundsDir
-    showDirs: false
-    showDotAndDotDot: false
-    nameFilters: ["*.oga", "*.ogg", "*.opus", "*.wav", "*.flac", "*.mp3"]
-    caseSensitive: false
-    sortField: FolderListModel.Name
+  // zenity prints the chosen path on one line, and nothing on cancel.
+  Process {
+    id: soundChooser
+    stdout: SplitParser {
+      onRead: function(line) {
+        var path = line.trim()
+        if (path.length > 0 && path.length <= 4096) root.writeSetting("sound", path)
+      }
+    }
   }
 
   // Returns the buffer with the chunk appended, or a null when the budget is
@@ -1026,20 +998,32 @@ Panel {
               width: parent.width
               spacing: Style.space(4)
 
-              Dropdown {
-                id: soundPicker
-                width: parent.width - playButton.width - parent.spacing
+              TextField {
+                id: soundField
+                width: parent.width - browseButton.width - playButton.width - parent.spacing * 2
                 anchors.verticalCenter: parent.verticalCenter
-                showLabel: false
-                value: root.soundPath
-                options: root.soundOptions
+                foreground: root.foreground
+                accent: root.accent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                placeholderText: root.defaultSound.replace(/^\/usr\/share\/sounds\//, "")
+                text: root.soundPath
+                onEditingFinished: if (text.trim() !== root.soundPath) root.writeSetting("sound", text.trim())
+              }
+
+              Button {
+                id: browseButton
+                anchors.verticalCenter: parent.verticalCenter
+                bordered: true
+                text: "Browse\u2026"
                 foreground: root.foreground
                 accent: root.accent
                 fontFamily: root.fontFamily
-                onChanged: function(value) { if (value !== root.soundPath) root.writeSetting("sound", value) }
+                onClicked: root.chooseSound()
               }
 
-              // Hear it before an alarm does, falling back the way bin/nag does.
+              // Hear it before an alarm does. Plays what is in the field, saved
+              // or not, and falls back the way bin/nag does.
               PanelActionButton {
                 id: playButton
                 anchors.verticalCenter: parent.verticalCenter
@@ -1049,21 +1033,10 @@ Panel {
                 foreground: root.foreground
                 fontFamily: root.fontFamily
                 onClicked: {
-                  var path = soundPicker.value.replace(/^~(?=\/)/, Quickshell.env("HOME"))
+                  var path = soundField.text.trim().replace(/^~(?=\/)/, Quickshell.env("HOME"))
                   Quickshell.execDetached(["pw-play", "--", path.length > 0 ? path : root.defaultSound])
                 }
               }
-            }
-
-            Button {
-              bordered: true
-              iconText: root.iconFolder
-              text: "Add sounds"
-              tooltipText: root.soundsDir.replace(Quickshell.env("HOME"), "~")
-              foreground: root.foreground
-              accent: root.accent
-              fontFamily: root.fontFamily
-              onClicked: root.openSoundsDir()
             }
 
             Toggle {

@@ -109,7 +109,8 @@ Panel {
   // "alarms" or "settings": what the card shows. The gear at its top left
   // swaps one for the other, and every open starts on the alarms.
   property string view: "alarms"
-  // Set while the file chooser is up, so the reopen lands on the settings.
+  // Set while the file chooser is up, or by a right click on the bar icon, so
+  // the next open lands on the settings.
   property bool reopenOnSettings: false
   property var preview: null
   property string actionError: ""
@@ -331,6 +332,15 @@ Panel {
 
   function writeSetting(key, value) {
     Quickshell.execDetached(["omarchy-bar", "set", "jankeesvw.nag", key, JSON.stringify(value), "--json"])
+  }
+
+  // Right click on the bar icon: open on the settings, switch to them, or
+  // close when they are already showing.
+  function toggleSettings() {
+    if (opened && view === "settings") { close(); return }
+    if (opened) { showView("settings"); return }
+    reopenOnSettings = true
+    open()
   }
 
   function showView(next) {
@@ -694,7 +704,11 @@ Panel {
       if (!alarm) return "No alarms"
       return root.sentenceFor(alarm)
     }
-    onPressed: function(b) { root.toggle() }
+    // Right click goes straight to the settings.
+    onPressed: function(b) {
+      if (b === Qt.RightButton) root.toggleSettings()
+      else root.toggle()
+    }
 
     // The countdown belongs in the bar and not only in the panel: the whole
     // reason to set one of these is that you are looking at something else.

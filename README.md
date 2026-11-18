@@ -145,6 +145,10 @@ rm -rf ~/.local/state/nag
 
 If you added the menu row or the keybinding above, remove those lines by hand as well. The plugin never wrote them.
 
+## Tests
+
+`python3 -m unittest discover -s tests` runs end-to-end tests of `bin/nag`: setting, listing, firing, snoozing and dismissing alarms, the notification and its buttons, the sound settings and demo mode. They run in a sandbox with stand-ins for systemd, the shell, notifications and `pw-play`, so nothing rings and no real alarm is touched.
+
 ## Licence
 
 MIT. See [LICENSE](LICENSE).

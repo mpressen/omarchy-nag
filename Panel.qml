@@ -257,13 +257,14 @@ Panel {
   readonly property bool shown: !hideWhenIdle || !idle || barPeek
   readonly property int shownSlot: shown ? barSlot : 0
 
-  implicitWidth: bar && bar.vertical ? (bar ? bar.barSize : Style.bar.sizeHorizontal) : shownSlot
-  implicitHeight: bar && bar.vertical ? shownSlot : (bar ? bar.barSize : Style.bar.sizeHorizontal)
+  readonly property bool vertical: !!bar && bar.vertical
+  implicitWidth: vertical ? bar.barSize : shownSlot
+  implicitHeight: vertical ? shownSlot : (bar ? bar.barSize : Style.bar.sizeHorizontal)
 
   // --- talking to the script -----------------------------------------------
 
   function refresh() {
-    if (!listProc.running) listProc.running = true
+    if (!listRun.running) listRun.start(["list"])
   }
 
   function applyList(raw) {
@@ -288,10 +289,9 @@ Panel {
   }
 
   function runAction(args) {
-    if (actionProc.running) return
+    if (actionRun.running) return
     actionError = ""
-    actionProc.command = [root.script].concat(args)
-    actionProc.running = true
+    actionRun.start(args)
   }
 
   function setAlarm() {
@@ -304,20 +304,28 @@ Panel {
     preview = null
   }
 
-  function cancelAlarm(id) { runAction(["cancel", String(id)]) }
-  function dismissAlarm(id) { runAction(["dismiss", String(id)]) }
-  function snoozeAlarm(id, minutes) { runAction(["snooze", String(id), String(minutes)]) }
+  // Cancels a pending alarm, or stops a ringing one.
+  function removeAlarm(id) { runAction(["cancel", String(id)]) }
+  function snoozeAlarm(id) { runAction(["snooze", String(id), String(snoozeMinutes)]) }
 
-  // Settings live in this widget's entry in shell.json, like any bar widget's,
-  // so the panel writes them the way `omarchy bar set` does from a terminal and
-  // reads them back through setting().
+  // What Enter on a ringing alarm does: snooze, the only thing worth one key
+  // when an alarm is going off in front of you, or dismiss with snooze off.
+  function answerAlarm(id) {
+    if (snoozeOn) snoozeAlarm(id)
+    else removeAlarm(id)
+  }
+
+  function expandHome(path) {
+    return path.replace(/^~(?=\/)/, Quickshell.env("HOME"))
+  }
+
   // A file chooser, opened on the current sound when it lives in the sounds
   // folder, else on the folder. The panel closes so the chooser gets the
   // keyboard; the pick is saved when it comes back, and the panel reopens on
-  // the settings, where the play button can try it. The folder is seeded only when it does
-  // not exist yet, so a sound you deleted from it stays deleted.
+  // the settings, where the play button can try it. The folder is seeded only
+  // when it does not exist yet, so a sound you deleted from it stays deleted.
   function chooseSound() {
-    var current = soundPath.replace(/^~(?=\/)/, Quickshell.env("HOME"))
+    var current = expandHome(soundPath)
     var start = current.indexOf(soundsDir + "/") === 0 ? current : soundsDir + "/"
     soundChooser.command = ["bash", "-c",
       'dir=$1; start=$2; shift 2; if [[ ! -d $dir ]]; then mkdir -p -- "$dir" && cp -n -- "$@" "$dir"/; fi; ' +
@@ -330,6 +338,9 @@ Panel {
     close()
   }
 
+  // Settings live in this widget's entry in shell.json, like any bar widget's,
+  // so the panel writes them the way `omarchy bar set` does from a terminal and
+  // reads them back through setting().
   function writeSetting(key, value) {
     Quickshell.execDetached(["omarchy-bar", "set", "jankeesvw.nag", key, JSON.stringify(value), "--json"])
   }
@@ -354,25 +365,99 @@ Panel {
     previewDebounce.restart()
   }
 
-  // The three helpers below all read the script's stdout the same way, and
-  // deliberately not with StdioCollector: that retains the whole stream before
-  // any length check of ours can run, inside the one process that hosts every
-  // widget on the desktop. SplitParser with an empty marker hands over raw
-  // chunks instead, so the budget is enforced while the bytes arrive.
+  // One run of bin/nag at a time, handing back its exit code and stdout.
   //
-  // bin/nag already bounds what it prints, but a cap that lives only in the
-  // producer is a cap that disappears the day something replaces the producer.
-  readonly property int maxBytes: 131072
+  // The output is read deliberately not with StdioCollector: that retains the
+  // whole stream before any length check of ours can run, inside the one
+  // process that hosts every widget on the desktop. SplitParser with an empty
+  // marker hands over raw chunks instead, so the budget is enforced while the
+  // bytes arrive. bin/nag already bounds what it prints, but a cap that lives
+  // only in the producer is a cap that disappears the day something replaces
+  // the producer.
+  //
+  // Deadline, then TERM, then KILL: a helper that never exits would otherwise
+  // hold its Process object forever.
+  component ScriptRun: QtObject {
+    id: run
+    property string script: ""
+    readonly property int maxBytes: 131072
+    readonly property int deadlineMs: 15000
+    readonly property bool running: proc.running
+    property string buffer: ""
+    property bool overflowed: false
+    signal done(int exitCode, string output)
 
-  // Deadline, then TERM, then KILL. setsid in the script is not needed here
-  // because the helper is a single bash process with no children of its own
-  // that outlive it, but the escalation timer still has to exist: a helper that
-  // never exits would otherwise hold its Process object forever.
-  readonly property int deadlineMs: 15000
+    function start(args) {
+      buffer = ""
+      overflowed = false
+      proc.command = [script].concat(args)
+      proc.running = true
+    }
 
-  property string listBuf: ""
-  property string parseBuf: ""
-  property string actionBuf: ""
+    function stop() {
+      if (!proc.running) return
+      proc.signal(15)
+      kill.start()
+    }
+
+    property Process proc: Process {
+      stdout: SplitParser {
+        splitMarker: ""
+        onRead: function(chunk) {
+          if (run.overflowed) return
+          if (run.buffer.length + chunk.length > run.maxBytes) {
+            run.overflowed = true
+            run.buffer = ""
+            run.stop()
+            return
+          }
+          run.buffer += chunk
+        }
+      }
+      onRunningChanged: if (running) deadline.restart(); else { deadline.stop(); kill.stop() }
+      onExited: function(exitCode) {
+        var output = run.buffer
+        run.buffer = ""
+        run.done(run.overflowed ? -1 : exitCode, output)
+      }
+    }
+    property Timer deadline: Timer { interval: run.deadlineMs; onTriggered: run.stop() }
+    property Timer kill: Timer { interval: 2000; onTriggered: run.proc.signal(9) }
+  }
+
+  function parseJson(raw) {
+    try { return JSON.parse(raw) } catch (e) { return null }
+  }
+
+  ScriptRun {
+    id: listRun
+    script: root.script
+    onDone: function(exitCode, output) { if (exitCode === 0) root.applyList(output) }
+  }
+
+  ScriptRun {
+    id: parseRun
+    script: root.script
+    onDone: function(exitCode, output) { root.preview = exitCode === 0 ? root.parseJson(output) : null }
+  }
+
+  ScriptRun {
+    id: actionRun
+    script: root.script
+    onDone: function(exitCode, output) {
+      var data = root.parseJson(output)
+      if (exitCode !== 0) root.actionError = "that did not work"
+      else if (data && data.ok === false) root.actionError = root.plain(data.error || "that did not work")
+      root.refresh()
+    }
+  }
+
+  // Nothing of ours should outlive the widget being torn down.
+  Component.onDestruction: {
+    listRun.stop()
+    parseRun.stop()
+    actionRun.stop()
+  }
 
   // The play button's preview in the settings. A new file, the chooser opening or the
   // panel closing stops it, so a test never plays on over the next one.
@@ -536,86 +621,6 @@ Panel {
     onExited: root.open()
   }
 
-  // Returns the buffer with the chunk appended, or a null when the budget is
-  // gone, in which case the caller stops the process and keeps nothing.
-  function appendBounded(buffer, chunk) {
-    var next = buffer + chunk
-    return next.length > root.maxBytes ? null : next
-  }
-
-  Process {
-    id: listProc
-    command: [root.script, "list"]
-    stdout: SplitParser {
-      splitMarker: ""
-      onRead: function(chunk) {
-        var next = root.appendBounded(root.listBuf, chunk)
-        if (next === null) { root.listBuf = ""; listProc.signal(15); listKill.start(); return }
-        root.listBuf = next
-      }
-    }
-    onRunningChanged: if (running) listDeadline.restart(); else { listDeadline.stop(); listKill.stop() }
-    onExited: function(exitCode) {
-      if (exitCode === 0) root.applyList(root.listBuf)
-      root.listBuf = ""
-    }
-  }
-  Timer { id: listDeadline; interval: root.deadlineMs; onTriggered: { listProc.signal(15); listKill.start() } }
-  Timer { id: listKill; interval: 2000; onTriggered: listProc.signal(9) }
-
-  Process {
-    id: parseProc
-    stdout: SplitParser {
-      splitMarker: ""
-      onRead: function(chunk) {
-        var next = root.appendBounded(root.parseBuf, chunk)
-        if (next === null) { root.parseBuf = ""; parseProc.signal(15); parseKill.start(); return }
-        root.parseBuf = next
-      }
-    }
-    onRunningChanged: if (running) parseDeadline.restart(); else { parseDeadline.stop(); parseKill.stop() }
-    onExited: function(exitCode) {
-      var data = null
-      if (exitCode === 0) {
-        try { data = JSON.parse(root.parseBuf) } catch (e) { data = null }
-      }
-      root.preview = data
-      root.parseBuf = ""
-    }
-  }
-  Timer { id: parseDeadline; interval: root.deadlineMs; onTriggered: { parseProc.signal(15); parseKill.start() } }
-  Timer { id: parseKill; interval: 2000; onTriggered: parseProc.signal(9) }
-
-  Process {
-    id: actionProc
-    stdout: SplitParser {
-      splitMarker: ""
-      onRead: function(chunk) {
-        var next = root.appendBounded(root.actionBuf, chunk)
-        if (next === null) { root.actionBuf = ""; actionProc.signal(15); actionKill.start(); return }
-        root.actionBuf = next
-      }
-    }
-    onRunningChanged: if (running) actionDeadline.restart(); else { actionDeadline.stop(); actionKill.stop() }
-    onExited: function(exitCode) {
-      var data = null
-      try { data = JSON.parse(root.actionBuf) } catch (e) { data = null }
-      if (exitCode !== 0) root.actionError = "that did not work"
-      else if (data && data.ok === false) root.actionError = root.plain(data.error || "that did not work")
-      root.actionBuf = ""
-      root.refresh()
-    }
-  }
-  Timer { id: actionDeadline; interval: root.deadlineMs; onTriggered: { actionProc.signal(15); actionKill.start() } }
-  Timer { id: actionKill; interval: 2000; onTriggered: actionProc.signal(9) }
-
-  // Nothing of ours should outlive the widget being torn down.
-  Component.onDestruction: {
-    listProc.signal(15)
-    parseProc.signal(15)
-    actionProc.signal(15)
-  }
-
   // --- timers --------------------------------------------------------------
 
   // Only the displayed countdown, no process. Idle when there is nothing to
@@ -647,9 +652,8 @@ Panel {
     interval: 180
     repeat: false
     onTriggered: {
-      if (parseProc.running) { previewDebounce.restart(); return }
-      parseProc.command = [root.script, "parse", root.draft]
-      parseProc.running = true
+      if (parseRun.running) previewDebounce.restart()
+      else parseRun.start(["parse", root.draft])
     }
   }
 
@@ -698,12 +702,7 @@ Panel {
     anchors.fill: parent
     bar: root.bar
     slotSize: root.barSlot
-    tooltipText: {
-      if (root.alarms.length === 0) return "No alarms"
-      var alarm = root.ringingCount > 0 ? root.alarms[0] : root.nextAlarm
-      if (!alarm) return "No alarms"
-      return root.sentenceFor(alarm)
-    }
+    tooltipText: root.sentenceFor(root.ringingCount > 0 ? root.alarms[0] : root.nextAlarm)
     // Right click goes straight to the settings.
     onPressed: function(b) {
       if (b === Qt.RightButton) root.toggleSettings()
@@ -921,15 +920,9 @@ Panel {
 
             case Qt.Key_Return:
             case Qt.Key_Enter:
-              // On a ringing row Enter is snooze, which is the only thing worth
-              // one key when an alarm is going off in front of you; with snooze
-              // off, it is dismiss, the only answer left.
               if (onRow) {
                 var alarm = root.cursorAlarm()
-                if (alarm && alarm.ringing) {
-                  if (root.snoozeOn) root.snoozeAlarm(alarm.id, root.snoozeMinutes)
-                  else root.dismissAlarm(alarm.id)
-                }
+                if (alarm && alarm.ringing) root.answerAlarm(alarm.id)
               } else {
                 root.setAlarm()
               }
@@ -939,10 +932,7 @@ Panel {
             case Qt.Key_Delete:
               if (onRow) {
                 var target = root.cursorAlarm()
-                if (target) {
-                  if (target.ringing) root.dismissAlarm(target.id)
-                  else root.cancelAlarm(target.id)
-                }
+                if (target) root.removeAlarm(target.id)
                 event.accepted = true
               }
               return
@@ -969,9 +959,8 @@ Panel {
           font.pixelSize: Style.font.caption
           color: {
             if (root.actionError !== "" || root.missingTime) return root.urgent
-            if (root.draft.trim().length === 0) return Qt.darker(root.foreground, 1.6)
-            if (!root.preview) return Qt.darker(root.foreground, 1.6)
-            return root.preview.ok === true ? root.accent : Qt.darker(root.foreground, 1.6)
+            if (root.draft.trim() !== "" && root.preview && root.preview.ok === true) return root.accent
+            return Qt.darker(root.foreground, 1.6)
           }
           // The same sentence the bar gives on hover, so what you are about to
           // get is spelled out in the words you will see afterwards: it reads
@@ -1097,7 +1086,7 @@ Panel {
                     tooltipText: "Snooze " + root.snoozeMinutes + " minutes"
                     foreground: rowColor
                     fontFamily: root.fontFamily
-                    onClicked: root.snoozeAlarm(modelData.id, root.snoozeMinutes)
+                    onClicked: root.snoozeAlarm(modelData.id)
                   }
 
                   PanelActionButton {
@@ -1107,10 +1096,7 @@ Panel {
                     tooltipText: modelData.ringing ? "Dismiss" : "Remove"
                     foreground: rowColor
                     fontFamily: root.fontFamily
-                    onClicked: {
-                      if (modelData.ringing) root.dismissAlarm(modelData.id)
-                      else root.cancelAlarm(modelData.id)
-                    }
+                    onClicked: root.removeAlarm(modelData.id)
                   }
                 }
               }
@@ -1232,7 +1218,7 @@ Panel {
                   fontFamily: root.fontFamily
                   onClicked: {
                     if (soundPreview.running) { soundPreview.running = false; return }
-                    var path = soundField.text.trim().replace(/^~(?=\/)/, Quickshell.env("HOME"))
+                    var path = root.expandHome(soundField.text.trim())
                     soundPreview.command = ["pw-play", "--", path.length > 0 ? path : root.defaultSound]
                     soundPreview.running = true
                   }

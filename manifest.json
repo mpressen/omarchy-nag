@@ -43,7 +43,7 @@
         "key": "sound",
         "type": "path",
         "label": "Sound",
-        "description": "A file pw-play can read, usually one dropped in ~/.local/share/nag/sounds, which the settings view lists. Empty plays the freedesktop alarm.",
+        "description": "An audio file (wav, flac, ogg, oga, opus or mp3). Empty plays the freedesktop alarm.",
         "defaultValue": ""
       },
       {

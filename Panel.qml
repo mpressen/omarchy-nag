@@ -62,6 +62,13 @@ Panel {
 
   // The sound settings, as bin/nag reads them when an alarm goes off.
   readonly property string defaultSound: "/usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga"
+  // Nag's own sounds folder, where Browse… opens. The first Browse creates it
+  // with copies of the default alarm and two other freedesktop candidates;
+  // more sounds are added by dropping files into it.
+  readonly property string soundsDir: (Quickshell.env("XDG_DATA_HOME") || Quickshell.env("HOME") + "/.local/share") + "/nag/sounds"
+  readonly property var seedSounds: [defaultSound,
+    "/usr/share/sounds/freedesktop/stereo/phone-incoming-call.oga",
+    "/usr/share/sounds/freedesktop/stereo/bell.oga"]
   readonly property bool soundOn: setting("soundOn", true) !== false
   readonly property bool soundRepeat: setting("soundRepeat", true) !== false
   readonly property string soundPath: String(setting("sound", "") || "")
@@ -293,16 +300,19 @@ Panel {
   // Settings live in this widget's entry in shell.json, like any bar widget's,
   // so the panel writes them the way `omarchy bar set` does from a terminal and
   // reads them back through setting().
-  // A file chooser, opened where the current sound is (the freedesktop folder
-  // for the default, which holds a few other candidates). The panel closes
-  // so the chooser gets the keyboard; the pick is saved when it comes back,
-  // and the panel reopens on the settings, where ▶ can try it.
+  // A file chooser, opened on the current sound when it lives in the sounds
+  // folder, else on the folder. The panel closes so the chooser gets the
+  // keyboard; the pick is saved when it comes back, and the panel reopens on
+  // the settings, where ▶ can try it. The folder is seeded only when it does
+  // not exist yet, so a sound you deleted from it stays deleted.
   function chooseSound() {
-    var current = soundPath.replace(/^~(?=\/)/, Quickshell.env("HOME")) || defaultSound
-    soundChooser.command = ["zenity", "--file-selection", "--title=Alarm sound",
-      "--filename=" + current,
-      "--file-filter=Audio | *.oga *.ogg *.opus *.wav *.flac *.mp3",
-      "--file-filter=All files | *"]
+    var current = soundPath.replace(/^~(?=\/)/, Quickshell.env("HOME"))
+    var start = current.indexOf(soundsDir + "/") === 0 ? current : soundsDir + "/"
+    soundChooser.command = ["bash", "-c",
+      'dir=$1; start=$2; shift 2; if [[ ! -d $dir ]]; then mkdir -p -- "$dir" && cp -n -- "$@" "$dir"/; fi; ' +
+      'exec zenity --file-selection --title="Alarm sound" --filename="$start" ' +
+      '--file-filter="Audio | *.oga *.ogg *.opus *.wav *.flac *.mp3" --file-filter="All files | *"',
+      "nag-sound", soundsDir, start].concat(seedSounds)
     soundChooser.running = true
     reopenOnSettings = true
     close()
@@ -1044,6 +1054,16 @@ Panel {
                   Quickshell.execDetached(["pw-play", "--", path.length > 0 ? path : root.defaultSound])
                 }
               }
+            }
+
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              wrapMode: Text.Wrap
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              color: Qt.darker(root.foreground, 1.6)
+              text: "Add your own sounds to " + root.soundsDir.replace(Quickshell.env("HOME"), "~")
             }
 
             Toggle {

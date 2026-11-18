@@ -704,6 +704,25 @@ cmd_dismiss() {
   ok_json '{ok: true}'
 }
 
+# Closing the alarm's notification (its X, or clearing the deck) dismisses the
+# alarm, as the Dismiss button does. The shell closes the card with the same
+# reason when a button or the card itself is clicked, so this waits a moment and
+# only acts if the alarm is still ringing: a Snooze or Dismiss click has already
+# answered it by then, and stopped this unit with it. The dismiss runs in its
+# own unit because it stops this one.
+watch_close() {
+  local id=$1 nid=$2 line
+  gdbus monitor --session --dest org.freedesktop.Notifications \
+    --object-path /org/freedesktop/Notifications 2>/dev/null |
+    while IFS= read -r line; do
+      [[ $line == *".NotificationClosed (uint32 $nid, uint32 2)"* ]] || continue
+      sleep 2
+      [[ -f $RING_DIR/$id.json ]] &&
+        systemd-run --user --quiet --collect -- "$SELF" dismiss "$id" >/dev/null 2>&1
+      break
+    done
+}
+
 # Run by the systemd timer. Moves the alarm to ringing, where it stays until it
 # is dismissed or snoozed from the panel: an alarm that clears itself after a
 # few seconds is one you can miss, and missing it is the whole thing this is
@@ -745,12 +764,28 @@ cmd_fire() {
   local actions=()
   snooze_on && actions+=(--action "Snooze $(snooze_minutes) min" "$SELF" snooze)
   actions+=(--action "Dismiss" "$SELF" dismiss)
-  omarchy-notification-send -u critical -g "$(glyph)" "$headline" "$when" \
-    "${actions[@]}" --with "$id" >/dev/null 2>&1 ||
+  local nid=""
+  if nid=$(omarchy-notification-send -p -u critical -g "$(glyph)" "$headline" "$when" \
+    "${actions[@]}" --with "$id" 2>/dev/null); then
+    # Only with buttons: on an older shell, clicking the card opens the panel
+    # and closes it with the same reason, which must not dismiss anything.
+    [[ $nid =~ ^[0-9]+$ ]] && watch_close "$id" "$nid" &
+  else
     omarchy-notification-send -u critical -g "$(glyph)" "$headline" "$when" \
       --exec omarchy-shell shell summon jankeesvw.nag >/dev/null 2>&1 || true
+  fi
 
   refresh_panel
+  ring "$id"
+
+  # Silent, played once, or the sound gone: still here while the alarm rings,
+  # so the close watcher can answer it.
+  while [[ -f $RING_DIR/$id.json ]]; do sleep 2; done
+}
+
+# The alarm's sound, for as long as the settings say.
+ring() {
+  local id=$1
 
   # Settings: `soundOn` false is silent, `sound` is the file (the freedesktop
   # alarm when unset or unreadable), `soundRepeat` false plays it once.

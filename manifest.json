@@ -54,6 +54,13 @@
         "defaultValue": true
       },
       {
+        "key": "snoozeOn",
+        "type": "boolean",
+        "label": "Allow snooze",
+        "description": "Off, a ringing alarm can only be dismissed: no snooze button in the panel or the notification.",
+        "defaultValue": true
+      },
+      {
         "key": "snoozeMinutes",
         "type": "integer",
         "label": "Snooze",

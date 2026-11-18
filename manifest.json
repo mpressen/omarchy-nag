@@ -24,6 +24,13 @@
         "label": "Hide when idle",
         "description": "With no alarm set, show the widget only while the pointer is on the bar, like Omarchy's indicators.",
         "defaultValue": false
+      },
+      {
+        "key": "icon",
+        "type": "string",
+        "label": "Icon",
+        "description": "A glyph for the bar and the notifications, such as Omarchy's reminder bell 󰢌. Empty keeps the timer.",
+        "defaultValue": ""
       }
     ]
   }

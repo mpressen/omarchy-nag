@@ -19,17 +19,17 @@
     "defaultSection": "right",
     "schema": [
       {
-        "key": "hideWhenIdle",
+        "key": "countdownOn",
         "type": "boolean",
-        "label": "Hide when idle",
-        "description": "With no alarm coming up, show the widget only while the pointer is on the bar, like Omarchy's indicators.",
-        "defaultValue": false
+        "label": "Countdown",
+        "description": "Off, the bar shows nothing before an alarm rings.",
+        "defaultValue": true
       },
       {
         "key": "countdownMinutes",
         "type": "integer",
         "label": "Countdown",
-        "description": "Minutes before the next alarm the countdown shows in the bar from; 0 shows it as soon as one is set.",
+        "description": "Minutes before an alarm the bar starts counting down; 0 counts down as soon as one is set.",
         "min": 0,
         "max": 1440,
         "step": 1,
@@ -45,8 +45,8 @@
       {
         "key": "ringMinutes",
         "type": "integer",
-        "label": "Ring for",
-        "description": "Minutes an alarm rings before it is reported missed.",
+        "label": "Missed after",
+        "description": "Minutes with no snooze or dismiss before an alarm stops and shows as missed, sound or not.",
         "min": 1,
         "max": 60,
         "step": 1,
@@ -69,8 +69,8 @@
       {
         "key": "soundRepeat",
         "type": "boolean",
-        "label": "Repeat until answered",
-        "description": "Off, the sound plays once.",
+        "label": "Play until answered",
+        "description": "Off, the sound plays a single time.",
         "defaultValue": true
       },
       {
@@ -93,8 +93,8 @@
       {
         "key": "snoozeMinutes",
         "type": "integer",
-        "label": "Snooze",
-        "description": "Minutes a snooze puts an alarm off, from the panel and the notification.",
+        "label": "Snooze for",
+        "description": "Minutes before a snoozed alarm rings again.",
         "min": 1,
         "max": 1440,
         "step": 1,

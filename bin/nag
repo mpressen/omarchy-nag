@@ -218,9 +218,13 @@ format_remaining() {
 # text the field takes back, for editing it. `relative` says it was set as a
 # duration, "5m tea", so the row leads with the countdown rather than the time,
 # and editing it starts from what is left rather than from a clock time.
+# `skipped` says a repeat waits past its next occurrence, so it can be undone.
 alarm_json() {
-  local id=$1 at=$2 message=$3 repeat=${4:-null} relative=${5:-false} now day label phrase spec
+  local id=$1 at=$2 message=$3 repeat=${4:-null} relative=${5:-false} now day label phrase spec natural skipped=false
   now=$(date +%s)
+  if [[ $repeat != null ]] && natural=$(next_occurrence "$repeat" "$now") && ((at > natural)); then
+    skipped=true
+  fi
   day=$(date -d "@$at" +%F)
   if [[ $day == "$(date +%F)" ]]; then
     label='%H:%M' phrase='at %H:%M' spec='%H:%M'
@@ -237,7 +241,7 @@ alarm_json() {
     --arg spec "$(if [[ $relative == true ]]; then duration_spec $((at - now)); else date -d "@$at" "+$spec"; fi)" \
     --arg remaining "$(format_remaining $((at - now)))" \
     --argjson remainingSeconds $((at - now)) \
-    --argjson repeat "$repeat" --argjson relative "$relative" '
+    --argjson repeat "$repeat" --argjson relative "$relative" --argjson skipped "$skipped" '
     def short: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
     def long: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
     # [phrase, list label, the words the field takes back]
@@ -254,7 +258,7 @@ alarm_json() {
      remaining: $remaining, remainingSeconds: $remainingSeconds, ringing: false,
      repeat: null, repeatLabel: null, relative: $relative, spec: ([$spec, $message] | text)}
     + if $repeat then ($repeat | words) as $w |
-        {repeat: $repeat, repeatLabel: $w[1], atPhrase: ($w[0] + " at " + $repeat.time),
+        {repeat: $repeat, repeatLabel: $w[1], atPhrase: ($w[0] + " at " + $repeat.time), skipped: $skipped,
          spec: (["every", $w[2], $repeat.time, $message] | text)}
       else {} end'
 }
@@ -847,6 +851,22 @@ cmd_skip() {
   schedule_parsed
 }
 
+# Undo the skips of a repeat: it goes back to its next occurrence from now.
+cmd_unskip() {
+  begin_write
+  local id=${1:-}
+  valid_id "$id" || die "unknown alarm"
+
+  local ALARM_ID ALARM_AT ALARM_MESSAGE ALARM_REPEAT ALARM_RELATIVE
+  load_alarm "$ALARM_DIR/$id.json" || die "unknown alarm"
+  [[ $ALARM_REPEAT != null ]] || die "not a repeating alarm"
+
+  local PARSED_AT PARSED_MESSAGE=$ALARM_MESSAGE PARSED_REPEAT=$ALARM_REPEAT PARSED_RELATIVE=false
+  PARSED_AT=$(next_occurrence "$ALARM_REPEAT" "$(date +%s)") || die "no next occurrence"
+  cancel_alarm "$id"
+  schedule_parsed
+}
+
 # Ask for an alarm through the Omarchy menu overlay, which is the same text
 # prompt the rest of the system uses. Meant for a keybinding and for a row in
 # the menu: it puts setting an alarm one keystroke away from anywhere, without
@@ -976,6 +996,7 @@ Usage: nag set <time> [message]     15:15 pick up the kids | 5m tea | tomorrow 9
        nag list                     every alarm as JSON
        nag snooze <id> [minutes]    default 5, or the snoozeMinutes setting
        nag skip <id>                skip the next occurrence of a repeat
+       nag unskip <id>              back to the next occurrence, undoing skips
        nag edit <id> <time> [message]
        nag dismiss <id>
        nag cancel <id>
@@ -991,6 +1012,7 @@ case ${1:-list} in
   list) cmd_list ;;
   snooze) shift; cmd_snooze "$@" ;;
   skip) shift; cmd_skip "$@" ;;
+  unskip) shift; cmd_unskip "$@" ;;
   edit) shift; cmd_edit "$@" ;;
   dismiss | cancel) shift; cmd_cancel "$@" ;;
   clear) cmd_clear ;;

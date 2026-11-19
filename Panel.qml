@@ -62,6 +62,7 @@ Panel {
   readonly property string iconStop: "\uF04D"
   readonly property string iconEdit: "\uF040"
   readonly property string iconSkip: "\uF051"
+  readonly property string iconUnskip: "\uF048"
   readonly property string iconRepeat: "\uF01E"
   readonly property string iconTrash: "\uF1F8"
 
@@ -352,6 +353,7 @@ Panel {
   function removeAlarm(id) { runAction(["cancel", String(id)]) }
   function snoozeAlarm(id) { runAction(["snooze", String(id), String(snoozeMinutes)]) }
   function skipAlarm(id) { runAction(["skip", String(id)]) }
+  function unskipAlarm(id) { runAction(["unskip", String(id)]) }
 
   // The remove button and Delete. A repeat goes on the second press, so one
   // slip does not lose every occurrence.
@@ -1200,6 +1202,18 @@ Panel {
                     foreground: rowColor
                     fontFamily: root.fontFamily
                     onClicked: root.snoozeAlarm(modelData.id)
+                  }
+
+                  // Back to the next occurrence, for a repeat already skipped.
+                  PanelActionButton {
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: !modelData.ringing && !!modelData.skipped
+                    focusable: false
+                    iconText: root.iconUnskip
+                    tooltipText: "Undo the skip"
+                    foreground: rowColor
+                    fontFamily: root.fontFamily
+                    onClicked: root.unskipAlarm(modelData.id)
                   }
 
                   // Skip, for a repeat that is not ringing yet.

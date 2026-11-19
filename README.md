@@ -29,8 +29,10 @@ The field takes the time and the message together, and works out where one ends 
 | `daily 9:00 water the plants` | every day at nine |
 | `every mon, wed and fri 7:30 run` | those three days |
 | `17:00 every weekday leave` | the time may come first |
+| `monthly 15 9:00 rent` | the 15th of every month |
+| `every month on the 31st at 9 invoice` | the last day in a shorter month |
 
-A repeat starts with `every` (or `daily`, `weekdays`, `weekends`) and needs a time: `every friday standup` is refused rather than guessed. Days can be `day`, `weekday`/`workday`, `weekend`, any day name, lists (`mon, wed and fri`, `mon,wed,fri`) and ranges (`mon-fri`); the time can be `15:00`, `3pm`, `9:30am` or a bare hour after `at` (`every friday at 15`). Without `every`, `wed 18:15 hockey` is next Wednesday, once. English only.
+A repeat starts with `every` (or `daily`, `weekdays`, `weekends`) and needs a time: `every friday standup` is refused rather than guessed. Days can be `day`, `weekday`/`workday`, `weekend`, any day name, lists (`mon, wed and fri`, `mon,wed,fri`) and ranges (`mon-fri`); the time can be `15:00`, `3pm`, `9:30am` or a bare hour after `at` (`every friday at 15`). Without `every`, `wed 18:15 hockey` is next Wednesday, once. A monthly repeat (`monthly` or `every month`) takes a day of the month, `15`, `15th` or `on the 15th`, or today's without one; a month too short for that day gets its last day, and the next month is back on the day asked for, so the 31st rings on 28 February and 31 March. English only.
 
 A bare number is minutes, so `5` is five minutes, which is what `omarchy reminder` takes too. Durations also accept the spelled-out units (`min`, `hour`, `days`) and `u` for uur.
 

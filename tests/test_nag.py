@@ -513,6 +513,39 @@ class RecurrenceTest(NagTestCase):
             self.assertEqual(result["at"], next_at(days, hour, minute), text)
             self.assertEqual((result["message"], result["atPhrase"]), (message, phrase), text)
 
+    def test_monthly_phrasings(self):
+        today = date.today().day
+        cases = {
+            "monthly 15 9:00 rent": (15, "09:00", "rent", "every month on the 15th at 09:00"),
+            "every month on the 1st at 8 pay": (1, "08:00", "pay", "every month on the 1st at 08:00"),
+            "9:00 monthly 22nd rent": (22, "09:00", "rent", "every month on the 22nd at 09:00"),
+            "monthly 9:00 water": (today, "09:00", "water", None),
+        }
+        for text, (day, clock_time, message, phrase) in cases.items():
+            result = self.parse(text)
+            self.assertEqual(result["repeat"], {"monthday": day, "time": clock_time}, text)
+            self.assertEqual(result["message"], message, text)
+            if phrase:
+                self.assertEqual(result["atPhrase"], phrase, text)
+            self.assertEqual(self.parse(result["spec"])["repeat"], result["repeat"], text)
+        for text in ("monthly 15 rent", "monthly 32 9:00 rent", "monthly rent"):
+            self.assertFalse(self.nag("parse", text)["ok"], text)
+
+    def test_monthly_falls_back_to_the_last_day_without_drifting(self):
+        alarm = self.set("monthly 31 9:00 end of month")
+        seen = [alarm["at"]]
+        for _ in range(13):
+            alarm = self.nag("skip", alarm["id"])
+            seen.append(alarm["at"])
+        days = [datetime.fromtimestamp(at) for at in seen]
+        months = [(d.year, d.month) for d in days]
+        self.assertEqual(len(set(months)), len(months))
+        for d in days:
+            last = (date(d.year + d.month // 12, d.month % 12 + 1, 1) - timedelta(days=1)).day
+            self.assertEqual((d.day, d.hour, d.minute), (min(31, last), 9, 0), d)
+        back = self.nag("unskip", alarm["id"])
+        self.assertEqual(back["at"], seen[-2])
+
     def test_a_repeat_needs_a_time(self):
         for text in ("every friday standup", "every 5m", "every"):
             self.assertFalse(self.nag("parse", text)["ok"], text)

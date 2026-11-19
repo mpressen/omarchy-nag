@@ -1218,6 +1218,7 @@ Panel {
 
                   // Skip, for a repeat that is not ringing yet.
                   PanelActionButton {
+                    id: skipButton
                     anchors.verticalCenter: parent.verticalCenter
                     visible: !modelData.ringing && !!modelData.repeat
                     focusable: false
@@ -1236,6 +1237,11 @@ Panel {
                     visible: !(modelData.ringing && root.snoozeOn)
                     focusable: false
                     iconText: root.iconEdit
+                    // The pencil fills 0.92 em where skip and close fill
+                    // 0.58 to 0.69, so at the same size it looks a size up.
+                    // Smaller glyph, same box, so the row keeps its rhythm.
+                    fontSize: Math.round(Style.font.icon * 0.75)
+                    size: skipButton.size
                     tooltipText: modelData.ringing ? "Put off" : "Edit"
                     foreground: rowColor
                     fontFamily: root.fontFamily

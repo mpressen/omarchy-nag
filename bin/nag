@@ -216,7 +216,8 @@ format_remaining() {
 # A repeating alarm reads as its rule instead ("Standup every Friday at
 # 15:00"), with a short repeatLabel for the list row. `spec` is the alarm as
 # text the field takes back, for editing it. `relative` says it was set as a
-# duration, "5m tea", so the row leads with the countdown rather than the time.
+# duration, "5m tea", so the row leads with the countdown rather than the time,
+# and editing it starts from what is left rather than from a clock time.
 alarm_json() {
   local id=$1 at=$2 message=$3 repeat=${4:-null} relative=${5:-false} now day label phrase spec
   now=$(date +%s)
@@ -233,7 +234,7 @@ alarm_json() {
   jq -cn --arg id "$id" --argjson at "$at" --arg message "$message" \
     --arg atLabel "$(date -d "@$at" "+$label")" \
     --arg atPhrase "$(date -d "@$at" "+$phrase")" \
-    --arg spec "$(date -d "@$at" "+$spec")" \
+    --arg spec "$(if [[ $relative == true ]]; then duration_spec $((at - now)); else date -d "@$at" "+$spec"; fi)" \
     --arg remaining "$(format_remaining $((at - now)))" \
     --argjson remainingSeconds $((at - now)) \
     --argjson repeat "$repeat" --argjson relative "$relative" '
@@ -301,6 +302,23 @@ begin_write() {
     ok_json '{ok: true, demo: true}'
     exit 0
   fi
+}
+
+# What is left, as text the field takes back: "36s", "5m", "2h 23m",
+# "1d 2h 5m". Minutes round up, so an alarm set for 5m and opened for editing
+# a moment later still reads 5m rather than 4m.
+duration_spec() {
+  local seconds=$1
+  ((seconds < 1)) && seconds=1
+  if ((seconds < 60)); then
+    printf '%ds' "$seconds"
+    return
+  fi
+  local minutes=$(((seconds + 59) / 60)) parts=()
+  ((minutes >= 1440)) && parts+=("$((minutes / 1440))d")
+  ((minutes % 1440 >= 60)) && parts+=("$((minutes % 1440 / 60))h")
+  ((minutes % 60)) && parts+=("$((minutes % 60))m")
+  printf '%s' "${parts[*]}"
 }
 
 # ---------------------------------------------------------------------------

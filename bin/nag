@@ -800,13 +800,15 @@ watch_close() {
 }
 
 # Turn an alarm nobody answered into a missed one: the ringing card in $3 is
-# replaced in place when there is one, and a new card is sent otherwise.
+# replaced in place when there is one, and a new card is sent otherwise. No
+# buttons, since there is nothing left to answer, and critical so it stays
+# until closed: a missed alarm whose card expires is missed twice.
 notify_missed() {
   local message=$1 at=$2 nid=${3:-} when replace=()
   when=$(date -d "@$at" '+%H:%M')
   [[ $(date -d "@$at" +%F) == "$(date +%F)" ]] || when=$(date -d "@$at" '+%a %-d %b %H:%M')
   [[ -n $nid ]] && replace=(-r "$nid")
-  omarchy-notification-send "${replace[@]}" -u normal -g "$(glyph)" \
+  omarchy-notification-send "${replace[@]}" -u critical -g "$(glyph)" \
     "Missed: $(headline "$message")" "$when" >/dev/null 2>&1 || true
 }
 

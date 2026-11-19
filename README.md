@@ -24,6 +24,13 @@ The field takes the time and the message together, and works out where one ends 
 | `next monday 8:00 standup` | as it says |
 | `2d water the plants` | two days from now |
 | `dec 25 9:00 call mum` | a date further out |
+| `every fri 15:00 standup` | every Friday at three |
+| `every weekday 5pm leave` | Monday to Friday at five |
+| `daily 9:00 water the plants` | every day at nine |
+| `every mon, wed and fri 7:30 run` | those three days |
+| `17:00 every weekday leave` | the time may come first |
+
+A repeat starts with `every` (or `daily`, `weekdays`, `weekends`) and needs a time: `every friday standup` is refused rather than guessed. Days can be `day`, `weekday`/`workday`, `weekend`, any day name, lists (`mon, wed and fri`, `mon,wed,fri`) and ranges (`mon-fri`); the time can be `15:00`, `3pm`, `9:30am` or a bare hour after `at` (`every friday at 15`). Without `every`, `wed 18:15 hockey` is next Wednesday, once. English only.
 
 A bare number is minutes, so `5` is five minutes, which is what `omarchy reminder` takes too. Durations also accept the spelled-out units (`min`, `hour`, `days`) and `u` for uur.
 
@@ -38,14 +45,20 @@ Everything works without the mouse, and the field keeps the focus the whole time
 | `Enter` | set the alarm |
 | `Down` and `Up` | walk into the list of alarms and back out |
 | `Enter` on a ringing alarm | snooze it (five minutes, or the Snooze setting) |
-| `Delete` on an alarm | remove it, or dismiss it if it is ringing |
+| `Delete` on an alarm | remove it, or dismiss it if it is ringing; a repeat asks for a second press |
 | `Escape` | leave the list, then close the panel |
 
 Typing anything takes the cursor back out of the list, so you never have to think about which mode you are in.
 
+## Repeating alarms
+
+Each row of a repeat shows its rule (`↻ weekdays`) and has a skip button, which moves it on to the occurrence after the next one. Snooze and dismiss act on the occurrence that rings; the next one is already set by then and does not move. The remove button deletes the whole repeat, on a second click.
+
+Every row has an edit button: the field comes back with the alarm as text (`every fri 15:00 standup`, `15:15 pick up the kids`), and Enter replaces the alarm with what it then says. With snooze off, a ringing alarm has the edit button instead of snooze, to put it off by hand.
+
 ## When it goes off
 
-A critical notification, the freedesktop alarm sound repeating until you snooze or dismiss it, and the bar widget pulsing red. The alarm keeps ringing in the panel until you dismiss or snooze it, because an alarm that clears itself after a few seconds is one you can miss, and missing it is the whole thing this is meant to prevent. The notification has Snooze and Dismiss buttons, clicking the card snoozes, and closing it with its X dismisses the alarm. On Omarchy before 4.5, which has no notification buttons, clicking it opens the panel instead.
+A critical notification, the freedesktop alarm sound repeating until you snooze or dismiss it, and the bar widget pulsing red. The alarm keeps ringing in the panel until you dismiss or snooze it, because an alarm that clears itself after a few seconds is one you can miss, and missing it is the whole thing this is meant to prevent. It rings for five minutes at most (the Ring for setting); an alarm nobody answers in that time stops, and its notification turns into a "Missed" one. The notification has Snooze and Dismiss buttons, clicking the card snoozes, and closing it with its X dismisses the alarm. On Omarchy before 4.5, which has no notification buttons, clicking it opens the panel instead.
 
 ## Setting one from anywhere
 
@@ -79,7 +92,9 @@ omarchy bar move jankeesvw.nag --section right
 
 Update an installed copy with `omarchy plugin update jankeesvw.nag`.
 
-To keep the bar clear while no alarm is set, the way Omarchy's own indicators stay hidden until the pointer comes onto the bar:
+The countdown shows in the bar from an hour before the next alarm (`countdownMinutes`, 0 for as soon as one is set), so a repeat that rings tomorrow does not sit in the bar all day.
+
+To keep the bar clear while no alarm is coming up, the way Omarchy's own indicators stay hidden until the pointer comes onto the bar:
 
 ```sh
 omarchy bar set jankeesvw.nag hideWhenIdle true --json
@@ -97,7 +112,7 @@ Nothing to configure, no account, no API key. It needs `jq`, `dd`, `date` and `s
 
 Alarms are systemd user timers, set with `--on-calendar` against wall-clock time. That is what makes them survive a shell restart, a Quickshell crash and a suspend. It is also the one behavioural difference from the built-in `omarchy reminder`, which uses `--on-active`: those count monotonic seconds, which stop while the machine sleeps, so a reminder set for 15:15 fires late by however long the lid was shut.
 
-Every alarm is written to disk as well, and the plugin re-arms any timer that has gone missing while its time is still ahead. That covers a reboot, which transient systemd units do not survive on their own.
+Every alarm is written to disk as well, and the plugin re-arms any timer that has gone missing while its time is still ahead. That covers a reboot, which transient systemd units do not survive on their own. An alarm whose time went by while the machine was off still rings if it is only a few minutes late (within Ring for), and is otherwise reported as missed rather than dropped; a repeat moves on to its next occurrence.
 
 There is no network access of any kind. Nothing is sent anywhere, and nothing is fetched.
 

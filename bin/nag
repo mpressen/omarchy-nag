@@ -33,6 +33,7 @@ readonly MAX_ALARMS=64
 readonly MAX_MESSAGE=200
 readonly MAX_SPEC=200
 readonly MAX_SNOOZE_MINUTES=1440
+readonly MAX_RING_MINUTES=60
 # One alarm document is a handful of fields, so anything approaching this is
 # either corruption or somebody else's file.
 readonly MAX_STATE_BYTES=4096
@@ -77,6 +78,9 @@ int_setting() {
 }
 
 snooze_minutes() { int_setting snoozeMinutes 1 "$MAX_SNOOZE_MINUTES" 5; }
+
+# How long an alarm rings before it is reported missed.
+ring_minutes() { int_setting ringMinutes 1 "$MAX_RING_MINUTES" 5; }
 
 # The `icon` setting when there is one, so the notification wears the glyph the
 # bar does.
@@ -208,26 +212,49 @@ format_remaining() {
 # a phrase for the tooltip ("Tea at 11:25", "Dentist tomorrow at 09:00"). The
 # "at" has to move around the day word instead of sitting in front of it, which
 # is why the phrase is made here and not by concatenation at the other end.
+#
+# A repeating alarm reads as its rule instead ("Standup every Friday at
+# 15:00"), with a short repeatLabel for the list row. `spec` is the alarm as
+# text the field takes back, for editing it.
 alarm_json() {
-  local id=$1 at=$2 message=$3 now day label phrase
+  local id=$1 at=$2 message=$3 repeat=${4:-null} now day label phrase spec
   now=$(date +%s)
   day=$(date -d "@$at" +%F)
   if [[ $day == "$(date +%F)" ]]; then
-    label='%H:%M' phrase='at %H:%M'
+    label='%H:%M' phrase='at %H:%M' spec='%H:%M'
   elif [[ $day == "$(date -d tomorrow +%F)" ]]; then
-    label='tomorrow %H:%M' phrase='tomorrow at %H:%M'
+    label='tomorrow %H:%M' phrase='tomorrow at %H:%M' spec='tomorrow %H:%M'
   elif ((at - now < 604800)); then
-    label='%a %H:%M' phrase='%A at %H:%M'
+    label='%a %H:%M' phrase='%A at %H:%M' spec='%a %H:%M'
   else
-    label='%-d %b %H:%M' phrase='on %-d %B at %H:%M'
+    label='%-d %b %H:%M' phrase='on %-d %B at %H:%M' spec='%F %H:%M'
   fi
   jq -cn --arg id "$id" --argjson at "$at" --arg message "$message" \
     --arg atLabel "$(date -d "@$at" "+$label")" \
     --arg atPhrase "$(date -d "@$at" "+$phrase")" \
+    --arg spec "$(date -d "@$at" "+$spec")" \
     --arg remaining "$(format_remaining $((at - now)))" \
     --argjson remainingSeconds $((at - now)) \
-    '{id: $id, at: $at, message: $message, atLabel: $atLabel, atPhrase: $atPhrase,
-      remaining: $remaining, remainingSeconds: $remainingSeconds, ringing: false}'
+    --argjson repeat "$repeat" '
+    def short: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    def long: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+    # [phrase, list label, the words the field takes back]
+    def words: .days as $d | ($d | map(tostring) | join(",")) as $key |
+      if $key == "1,2,3,4,5,6,7" then ["every day", "daily", "day"]
+      elif $key == "1,2,3,4,5" then ["every weekday", "weekdays", "weekday"]
+      elif $key == "6,7" then ["every weekend", "weekends", "weekend"]
+      elif ($d | length) == 1 then ["every " + long[$d[0] - 1], short[$d[0] - 1], (short[$d[0] - 1] | ascii_downcase)]
+      else ["every " + ($d[:-1] | map(short[. - 1]) | join(", ")) + " and " + short[$d[-1] - 1],
+            ($d | map(short[. - 1]) | join(" ")), ($d | map(short[. - 1] | ascii_downcase) | join(","))]
+      end;
+    def text: map(select(. != "")) | join(" ");
+    {id: $id, at: $at, message: $message, atLabel: $atLabel, atPhrase: $atPhrase,
+     remaining: $remaining, remainingSeconds: $remainingSeconds, ringing: false,
+     repeat: null, repeatLabel: null, spec: ([$spec, $message] | text)}
+    + if $repeat then ($repeat | words) as $w |
+        {repeat: $repeat, repeatLabel: $w[1], atPhrase: ($w[0] + " at " + $repeat.time),
+         spec: (["every", $w[2], $repeat.time, $message] | text)}
+      else {} end'
 }
 
 # The answer to set, parse and snooze: the alarm, marked ok.
@@ -338,15 +365,146 @@ resolve_spec() {
   printf '%d' "$at"
 }
 
+# ---------------------------------------------------------------------------
+# recurrence
+# ---------------------------------------------------------------------------
+
+# A repeat is a set of ISO weekdays (1 Monday .. 7 Sunday) and a clock time,
+# stored with the alarm as {"days": [1, 2, 3, 4, 5], "time": "17:00"}. Each
+# occurrence is an ordinary one-shot alarm, and firing one sets the next: the
+# series is never a timer of its own, so a snooze, a dismiss or a skip acts on
+# one occurrence and cannot move the others.
+
+day_number() {
+  case ${1,,} in
+    mon | monday | mondays) echo 1 ;;
+    tue | tues | tuesday | tuesdays) echo 2 ;;
+    wed | weds | wednesday | wednesdays) echo 3 ;;
+    thu | thur | thurs | thursday | thursdays) echo 4 ;;
+    fri | friday | fridays) echo 5 ;;
+    sat | saturday | saturdays) echo 6 ;;
+    sun | sunday | sundays) echo 7 ;;
+    *) return 1 ;;
+  esac
+}
+
+# The weekdays one word names, "fri", "weekdays", "mon-fri", or fail.
+day_set() {
+  local word=${1,,} from to day range=()
+  case $word in
+    day | days | daily) echo 1 2 3 4 5 6 7 ;;
+    weekday | weekdays | workday | workdays) echo 1 2 3 4 5 ;;
+    weekend | weekends) echo 6 7 ;;
+    ?*-?*)
+      from=$(day_number "${word%%-*}") && to=$(day_number "${word#*-}") || return 1
+      for ((day = from; ; day = day % 7 + 1)); do
+        range+=("$day")
+        ((day == to)) && break
+      done
+      echo "${range[*]}"
+      ;;
+    *) day_number "$word" ;;
+  esac
+}
+
+# A clock time as HH:MM: "15:00", "9am", "9:30pm", or a bare hour, "15".
+clock_time() {
+  local word=${1,,}
+  [[ $word =~ ^[0-9]{1,2}(:[0-9]{2})?(am|pm)?$ ]] || return 1
+  if [[ $word =~ ^[0-9]+$ ]]; then
+    ((10#$word < 24)) || return 1
+    word="$((10#$word)):00"
+  fi
+  date -d "today $word" +%H:%M 2>/dev/null
+}
+
+# "every fri 15:00 standup", "every weekday at 17 leave", "daily 9:00 water",
+# "every mon, wed and fri 7:30 run", "17:00 every weekday leave". The keyword
+# is what makes it a repeat: "fri 15:00" alone is still next Friday, once, and
+# a time is required, because a repeat at a guessed hour is one you sleep
+# through.
+#
+# Sets PARSED_AT, PARSED_MESSAGE and PARSED_REPEAT, or fails.
+parse_repeat() {
+  local -a words=("$@") days=() parts
+  local i=0 time="" word part set
+
+  # The time may come first.
+  if time=$(clock_time "${words[0]:-}"); then i=1; else time=""; fi
+  word=${words[i]:-}
+  case ${word,,} in
+    every | each) i=$((i + 1)) ;;
+    daily | weekdays | workdays | weekends) ;;
+    *) return 1 ;;
+  esac
+
+  # Day words, alone or in lists: "mon, wed and fri", "mon,wed,fri".
+  while ((i < ${#words[@]})); do
+    word=${words[i],,}
+    if [[ $word == and ]]; then i=$((i + 1)); continue; fi
+    IFS=, read -r -a parts <<<"${word%,}"
+    ((${#parts[@]})) || break
+    set=""
+    for part in "${parts[@]}"; do
+      set+=" $(day_set "$part")" || { set=""; break; }
+    done
+    [[ -n $set ]] || break
+    read -r -a parts <<<"$set"
+    days+=("${parts[@]}")
+    i=$((i + 1))
+  done
+  ((${#days[@]})) || return 1
+
+  if [[ -z $time ]]; then
+    word=${words[i]:-}
+    [[ ${word,,} == at ]] && i=$((i + 1))
+    time=$(clock_time "${words[i]:-}") || return 1
+    i=$((i + 1))
+    # "9:30 pm", in two words.
+    word=${words[i]:-}
+    if [[ ${word,,} == am || ${word,,} == pm ]]; then
+      time=$(clock_time "${words[i - 1]}$word") || return 1
+      i=$((i + 1))
+    fi
+  fi
+
+  PARSED_REPEAT=$(printf '%s\n' "${days[@]}" | sort -nu |
+    jq -sc --arg time "$time" '{days: ., time: $time}')
+  PARSED_AT=$(next_occurrence "$PARSED_REPEAT" "$(date +%s)") || return 1
+  PARSED_MESSAGE=$(clean_text "${words[*]:i}" "$MAX_MESSAGE")
+}
+
+# The first moment after the epoch in $2 that the repeat in $1 names. Day by
+# day rather than by adding a week of seconds, so a DST change cannot shift
+# the hour; a time that does not exist on a day (02:30 on the spring change)
+# skips that day.
+next_occurrence() {
+  local repeat=$1 after=$2 time days i day at
+  time=$(jq -r '.time' <<<"$repeat")
+  days=" $(jq -r '.days | map(tostring) | join(" ")' <<<"$repeat") "
+  for ((i = 0; i <= 7; i++)); do
+    day=$(date -d "$(date -d "@$after" +%F) +$i day" +%F)
+    at=$(date -d "$day $time" +%s 2>/dev/null) || continue
+    if ((at > after)) && [[ $days == *" $(date -d "@$at" +%u) "* ]]; then
+      printf '%d' "$at"
+      return 0
+    fi
+  done
+  return 1
+}
+
 # Split "15:15 pick up the kids" into a time and a message by trying the longest
 # leading run of words that resolves, down to one. Longest first is what lets
 # "tomorrow 9:00 dentist" and "next wednesday 18:15 hockey" work without the
-# message having to be quoted.
+# message having to be quoted. A repeat is tried first.
 #
-# Sets PARSED_AT and PARSED_MESSAGE.
+# Sets PARSED_AT, PARSED_MESSAGE and PARSED_REPEAT ("null" for a one-shot).
 parse_input() {
   local -a words
   read -r -a words <<<"$(clean_text "$*" "$MAX_SPEC")"
+  PARSED_REPEAT=null
+  ((${#words[@]})) && parse_repeat "${words[@]}" && return 0
+  PARSED_REPEAT=null
   local count=${#words[@]} n at
   for ((n = count < 4 ? count : 4; n >= 1; n--)); do
     if at=$(resolve_spec "${words[*]:0:n}"); then
@@ -362,13 +520,32 @@ parse_input() {
 # alarm state
 # ---------------------------------------------------------------------------
 
-# Write an alarm to disk and arm its systemd timer, or answer with an error.
+# Write an alarm to disk and arm its systemd timer, or fail and leave nothing.
 schedule() {
-  local id=$1 at=$2 message=$3
+  local id=$1 at=$2 message=$3 repeat=${4:-null}
   write_state "$ALARM_DIR/$id.json" "$(jq -cn --arg id "$id" --argjson at "$at" \
-    --arg message "$message" --argjson created "$(date +%s)" \
-    '{id: $id, at: $at, message: $message, created: $created}')" || die "could not save the alarm"
-  arm_timer "$id" "$at" || { rm -f -- "$ALARM_DIR/$id.json"; die "could not set the timer"; }
+    --arg message "$message" --argjson repeat "$repeat" --argjson created "$(date +%s)" \
+    '{id: $id, at: $at, message: $message, created: $created}
+     + if $repeat then {repeat: $repeat} else {} end')" || return 1
+  arm_timer "$id" "$at" || { rm -f -- "$ALARM_DIR/$id.json"; return 1; }
+}
+
+# The occurrence of a repeat that comes after the epoch in $2, as a new alarm.
+schedule_next() {
+  local repeat=$1 after=$2 message=$3 at
+  at=$(next_occurrence "$repeat" "$after") && schedule "$(new_id)" "$at" "$message" "$repeat"
+}
+
+# Sets ALARM_ID, ALARM_AT, ALARM_MESSAGE and ALARM_REPEAT from an alarm or
+# ringing file, or fails on one that is not a bounded, well-shaped document.
+# The fields are split on the unit separator, which clean_text never lets
+# into a message.
+load_alarm() {
+  local fields
+  fields=$(read_state "$1" | jq -er 'select(type == "object")
+    | [.id, .at, .message // "", (.repeat // null | tojson)] | map(tostring) | join([31] | implode)' 2>/dev/null) || return 1
+  IFS=$'\x1f' read -r ALARM_ID ALARM_AT ALARM_MESSAGE ALARM_REPEAT <<<"$fields"
+  valid_id "$ALARM_ID" && [[ $ALARM_AT =~ ^[0-9]+$ ]]
 }
 
 # Arm the systemd timer for an alarm that is already on disk.
@@ -380,39 +557,52 @@ arm_timer() {
     -- "$SELF" fire "$1" >/dev/null 2>&1
 }
 
-timer_exists() {
-  systemctl --user list-units --all --no-legend --plain "nag-$1.timer" 2>/dev/null | grep -q .
+# Whether the alarm's timer, or the unit ringing it, is loaded.
+unit_exists() {
+  systemctl --user list-units --all --no-legend --plain "nag-$1.timer" "nag-$1.service" 2>/dev/null | grep -q .
 }
 
-# Every pending alarm on disk, one per line. Drops the ones whose time has
-# passed without firing and re-arms any whose timer is missing: a reboot clears
-# transient units but not the files, so this is what makes an alarm for
-# tomorrow morning real.
+# Every pending alarm on disk, one per line. Re-arms any whose timer is
+# missing: a reboot clears transient units but not the files, so this is what
+# makes an alarm for tomorrow morning real.
 pending_alarms() {
-  local now file fields id at message
+  local now file ALARM_ID ALARM_AT ALARM_MESSAGE ALARM_REPEAT
   now=$(date +%s)
   for file in "$ALARM_DIR"/*.json; do
     # A file we cannot read as one bounded, regular, well-shaped document is
     # dropped rather than repaired. Losing an alarm is the honest outcome for
     # state that is no longer ours to trust.
-    fields=$(read_state "$file" | jq -er 'select(type == "object")
-      | [.id, .at, .message // ""] | map(tostring) | join("\t")' 2>/dev/null) || { rm -f -- "$file"; continue; }
-    IFS=$'\t' read -r id at message <<<"$fields"
-    if ! valid_id "$id" || [[ ! $at =~ ^[0-9]+$ ]]; then
-      rm -f -- "$file"
+    load_alarm "$file" || { rm -f -- "$file"; continue; }
+
+    if ((ALARM_AT <= now)); then
+      # Its timer is going off right now, or it already rings.
+      unit_exists "$ALARM_ID" || [[ -f $RING_DIR/$ALARM_ID.json ]] ||
+        overdue "$ALARM_ID" "$ALARM_AT" "$ALARM_MESSAGE" "$ALARM_REPEAT"
       continue
     fi
 
-    # Past its time and not ringing: it fired while we were not running, or the
-    # timer was lost. Either way there is nothing left to wait for.
-    if ((at <= now)); then
-      [[ -f $RING_DIR/$id.json ]] || rm -f -- "$file"
-      continue
-    fi
-
-    timer_exists "$id" || arm_timer "$id" "$at"
-    alarm_json "$id" "$at" "$message"
+    unit_exists "$ALARM_ID" || arm_timer "$ALARM_ID" "$ALARM_AT"
+    alarm_json "$ALARM_ID" "$ALARM_AT" "$ALARM_MESSAGE" "$ALARM_REPEAT"
   done
+}
+
+# An alarm whose time went by with no timer left to ring it: the machine was
+# off. Within the ringing window it still rings, late; past it, it is reported
+# missed, so it never just disappears. A repeat moves on to its next
+# occurrence from now, however many it slept through.
+overdue() {
+  local id=$1 at=$2 message=$3 repeat=$4 now next new
+  now=$(date +%s)
+  if ((now - at < $(ring_minutes) * 60)) &&
+    systemd-run --user --quiet --collect --unit="nag-$id" -- "$SELF" fire "$id" >/dev/null 2>&1; then
+    return 0
+  fi
+  rm -f -- "$ALARM_DIR/$id.json"
+  notify_missed "$message" "$at"
+  if [[ $repeat != null ]] && next=$(next_occurrence "$repeat" "$now"); then
+    new=$(new_id)
+    if schedule "$new" "$next" "$message" "$repeat"; then alarm_json "$new" "$next" "$message" "$repeat"; fi
+  fi
 }
 
 # Every ringing alarm, one per line.
@@ -436,9 +626,9 @@ cancel_alarm() {
 # ringing
 # ---------------------------------------------------------------------------
 
-# The notification of a ringing alarm. The summary and body are rendered by
-# components this plugin does not own, and the summary is whatever somebody
-# typed into the field, so it goes through headline().
+# The notification of a ringing alarm, its id left in RING_NID. The summary and
+# body are rendered by components this plugin does not own, and the summary is
+# whatever somebody typed into the field, so it goes through headline().
 notify_ringing() {
   local id=$1 message=$2 when=$3
   # The buttons answer the alarm without opening the panel; clicking the card
@@ -453,11 +643,12 @@ notify_ringing() {
     answer=(--action "Snooze $(snooze_minutes) min" "$SELF" snooze --action "Dismiss" "$SELF" dismiss --with "$id")
   fi
 
-  local nid
-  if nid=$(omarchy-notification-send -p -u critical -g "$(glyph)" "$(headline "$message")" "$when" \
+  RING_NID=""
+  if RING_NID=$(omarchy-notification-send -p -u critical -g "$(glyph)" "$(headline "$message")" "$when" \
     "${answer[@]}" 2>/dev/null); then
-    [[ $nid =~ ^[0-9]+$ ]] && watch_close "$id" "$nid" &
+    if [[ $RING_NID =~ ^[0-9]+$ ]]; then watch_close "$id" "$RING_NID" & else RING_NID=""; fi
   else
+    RING_NID=""
     # Shells older than Omarchy 4.5 have no --action and get the click-to-open
     # card instead. No close watcher for it: clicking that card opens the panel
     # and closes it with the same reason, which must not dismiss.
@@ -483,6 +674,17 @@ watch_close() {
         systemd-run --user --quiet --collect -- "$SELF" dismiss "$id" >/dev/null 2>&1
       break
     done
+}
+
+# Turn an alarm nobody answered into a missed one: the ringing card in $3 is
+# replaced in place when there is one, and a new card is sent otherwise.
+notify_missed() {
+  local message=$1 at=$2 nid=${3:-} when replace=()
+  when=$(date -d "@$at" '+%H:%M')
+  [[ $(date -d "@$at" +%F) == "$(date +%F)" ]] || when=$(date -d "@$at" '+%a %-d %b %H:%M')
+  [[ -n $nid ]] && replace=(-r "$nid")
+  omarchy-notification-send "${replace[@]}" -u normal -g "$(glyph)" \
+    "Missed: $(headline "$message")" "$when" >/dev/null 2>&1 || true
 }
 
 # The alarm's sound, for as long as the settings say: `soundOn` false is
@@ -516,9 +718,18 @@ ring() {
 # ---------------------------------------------------------------------------
 
 cmd_parse() {
-  local PARSED_AT PARSED_MESSAGE
+  local PARSED_AT PARSED_MESSAGE PARSED_REPEAT
   parse_input "$@" || die "not a time"
-  ok_alarm "" "$PARSED_AT" "$PARSED_MESSAGE"
+  ok_alarm "" "$PARSED_AT" "$PARSED_MESSAGE" "$PARSED_REPEAT"
+}
+
+# Schedule what parse_input left in PARSED_*, and answer with it.
+schedule_parsed() {
+  local id
+  id=$(new_id)
+  schedule "$id" "$PARSED_AT" "$PARSED_MESSAGE" "$PARSED_REPEAT" || die "could not set the timer"
+  refresh_panel
+  ok_alarm "$id" "$PARSED_AT" "$PARSED_MESSAGE" "$PARSED_REPEAT"
 }
 
 cmd_set() {
@@ -526,12 +737,23 @@ cmd_set() {
   local alarms=("$ALARM_DIR"/*.json)
   ((${#alarms[@]} < MAX_ALARMS)) || die "too many alarms"
 
-  local PARSED_AT PARSED_MESSAGE id
+  local PARSED_AT PARSED_MESSAGE PARSED_REPEAT
   parse_input "$@" || die "not a time"
-  id=$(new_id)
-  schedule "$id" "$PARSED_AT" "$PARSED_MESSAGE"
-  refresh_panel
-  ok_alarm "$id" "$PARSED_AT" "$PARSED_MESSAGE"
+  schedule_parsed
+}
+
+# Replace an alarm, pending or ringing, with what the text now says. The old
+# one goes only once the new text has parsed, so a typo keeps it.
+cmd_edit() {
+  begin_write
+  local id=${1:-}
+  shift || true
+  valid_id "$id" && [[ -f $ALARM_DIR/$id.json || -f $RING_DIR/$id.json ]] || die "unknown alarm"
+
+  local PARSED_AT PARSED_MESSAGE PARSED_REPEAT
+  parse_input "$@" || die "not a time"
+  cancel_alarm "$id"
+  schedule_parsed
 }
 
 cmd_list() {
@@ -540,7 +762,8 @@ cmd_list() {
   { ringing_alarms; pending_alarms; } | list_json
 }
 
-# Cancel a pending alarm, or stop a ringing one without setting a new one.
+# Cancel a pending alarm, a whole repeat with it, or stop a ringing one
+# without setting a new one.
 cmd_cancel() {
   begin_write
   local id=${1:-}
@@ -562,6 +785,8 @@ cmd_clear() {
   ok_json '{ok: true}'
 }
 
+# Put a ringing or pending alarm off by some minutes, as a one-shot: snoozing
+# an occurrence of a repeat leaves the next occurrence where it was.
 cmd_snooze() {
   begin_write
   local id=${1:-} minutes=${2:-}
@@ -569,17 +794,28 @@ cmd_snooze() {
   valid_id "$id" || die "unknown alarm"
   int_in "$minutes" 1 "$MAX_SNOOZE_MINUTES" || die "bad snooze"
 
-  local raw message
-  raw=$(read_state "$RING_DIR/$id.json") || raw=$(read_state "$ALARM_DIR/$id.json") || die "unknown alarm"
-  message=$(jq -r '.message // ""' <<<"$raw" 2>/dev/null) || message=""
+  local ALARM_ID ALARM_AT ALARM_MESSAGE ALARM_REPEAT
+  load_alarm "$RING_DIR/$id.json" || load_alarm "$ALARM_DIR/$id.json" || die "unknown alarm"
   cancel_alarm "$id"
 
-  local new_alarm at
-  new_alarm=$(new_id)
-  at=$(($(date +%s) + 10#$minutes * 60))
-  schedule "$new_alarm" "$at" "$message"
-  refresh_panel
-  ok_alarm "$new_alarm" "$at" "$message"
+  local PARSED_AT=$(($(date +%s) + 10#$minutes * 60)) PARSED_MESSAGE=$ALARM_MESSAGE PARSED_REPEAT=null
+  schedule_parsed
+}
+
+# Skip the next occurrence of a repeat: it moves on to the one after.
+cmd_skip() {
+  begin_write
+  local id=${1:-}
+  valid_id "$id" || die "unknown alarm"
+
+  local ALARM_ID ALARM_AT ALARM_MESSAGE ALARM_REPEAT
+  load_alarm "$ALARM_DIR/$id.json" || die "unknown alarm"
+  [[ $ALARM_REPEAT != null ]] || die "not a repeating alarm"
+
+  local PARSED_AT PARSED_MESSAGE=$ALARM_MESSAGE PARSED_REPEAT=$ALARM_REPEAT
+  PARSED_AT=$(next_occurrence "$ALARM_REPEAT" "$ALARM_AT") || die "no next occurrence"
+  cancel_alarm "$id"
+  schedule_parsed
 }
 
 # Ask for an alarm through the Omarchy menu overlay, which is the same text
@@ -631,32 +867,48 @@ cmd_ask() {
 }
 
 # Run by the systemd timer. Moves the alarm to ringing, where it stays until it
-# is dismissed or snoozed: an alarm that clears itself after a few seconds is
-# one you can miss, and missing it is the whole thing this is meant to prevent.
+# is dismissed or snoozed, for the ringMinutes setting at most: an alarm that
+# clears itself after a few seconds is one you can miss, and one nobody
+# answers for that long was missed, which its notification then says.
 cmd_fire() {
   ensure_dirs
   demo_on && exit 0
-  local id=${1:-} raw message at when
+  local id=${1:-} when ALARM_ID ALARM_AT ALARM_MESSAGE ALARM_REPEAT
   valid_id "$id" || exit 0
-  raw=$(read_state "$ALARM_DIR/$id.json") || exit 0
+  load_alarm "$ALARM_DIR/$id.json" || exit 0
+  when=$(date -d "@$ALARM_AT" '+%H:%M')
 
-  message=$(jq -r '.message // ""' <<<"$raw" 2>/dev/null) || message=""
-  at=$(jq -r '.at // 0' <<<"$raw" 2>/dev/null) || at=0
-  [[ $at =~ ^[0-9]+$ ]] || at=$(date +%s)
-  when=$(date -d "@$at" '+%H:%M')
-
-  write_state "$RING_DIR/$id.json" "$(jq -cn --arg id "$id" --argjson at "$at" \
-    --arg message "$message" --arg atLabel "$when" \
+  write_state "$RING_DIR/$id.json" "$(jq -cn --arg id "$id" --argjson at "$ALARM_AT" \
+    --arg message "$ALARM_MESSAGE" --arg atLabel "$when" \
     '{id: $id, at: $at, message: $message, atLabel: $atLabel}')"
   rm -f -- "$ALARM_DIR/$id.json"
 
-  notify_ringing "$id" "$message" "$when"
-  refresh_panel
-  ring "$id"
+  # The next occurrence is set before this one rings, so nothing done to this
+  # one can move it.
+  if [[ $ALARM_REPEAT != null ]]; then
+    schedule_next "$ALARM_REPEAT" "$ALARM_AT" "$ALARM_MESSAGE" || true
+  fi
 
-  # Silent, played once, or the sound gone: still here while the alarm rings,
-  # so the close watcher can answer it.
-  while [[ -f $RING_DIR/$id.json ]]; do sleep 2; done
+  local RING_NID
+  notify_ringing "$id" "$ALARM_MESSAGE" "$when"
+  refresh_panel
+  ring "$id" &
+  local sound=$!
+
+  # A second at a time, counted rather than clocked, until it is answered or
+  # its time is up.
+  local ticks=$(($(ring_minutes) * 60))
+  while [[ -f $RING_DIR/$id.json ]]; do
+    if ((ticks-- <= 0)); then
+      rm -f -- "$RING_DIR/$id.json"
+      notify_missed "$ALARM_MESSAGE" "$ALARM_AT" "$RING_NID"
+      refresh_panel
+      break
+    fi
+    sleep 1
+  done
+  pkill -P "$sound" 2>/dev/null || true
+  kill "$sound" 2>/dev/null || true
 }
 
 # `demo on` and `demo off`, plus a bare `demo` that says which it is. Turning it
@@ -683,10 +935,13 @@ cmd_demo() {
 usage() {
   cat <<'EOF'
 Usage: nag set <time> [message]     15:15 pick up the kids | 5m tea | tomorrow 9:00 dentist
+                                    every fri 15:00 standup | every weekday 9am | daily 8:00
        nag ask                      prompt for one through the Omarchy menu overlay
        nag parse <time> [message]   resolve without setting, for the live preview
        nag list                     every alarm as JSON
        nag snooze <id> [minutes]    default 5, or the snoozeMinutes setting
+       nag skip <id>                skip the next occurrence of a repeat
+       nag edit <id> <time> [message]
        nag dismiss <id>
        nag cancel <id>
        nag clear
@@ -700,6 +955,8 @@ case ${1:-list} in
   parse) shift; cmd_parse "$@" ;;
   list) cmd_list ;;
   snooze) shift; cmd_snooze "$@" ;;
+  skip) shift; cmd_skip "$@" ;;
+  edit) shift; cmd_edit "$@" ;;
   dismiss | cancel) shift; cmd_cancel "$@" ;;
   clear) cmd_clear ;;
   demo) shift; cmd_demo "$@" ;;

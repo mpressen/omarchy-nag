@@ -60,6 +60,10 @@ Panel {
   readonly property string iconBack: "\uF060"
   readonly property string iconPlay: "\uF04B"
   readonly property string iconStop: "\uF04D"
+  readonly property string iconEdit: "\uF040"
+  readonly property string iconSkip: "\uF051"
+  readonly property string iconRepeat: "\uF01E"
+  readonly property string iconTrash: "\uF1F8"
 
   // The sound settings, as bin/nag reads them when an alarm goes off.
   readonly property string defaultSound: "/usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga"
@@ -82,6 +86,12 @@ Panel {
   // Off, a ringing alarm can only be dismissed: no snooze button in the
   // panel or the notification.
   readonly property bool snoozeOn: setting("snoozeOn", true) !== false
+
+  // Minutes an alarm rings before bin/nag reports it missed.
+  readonly property int ringMinutes: {
+    var minutes = Number(setting("ringMinutes", 5))
+    return minutes >= 1 && minutes <= 60 ? Math.floor(minutes) : 5
+  }
 
   // Minutes a snooze puts an alarm off, from the panel and the notification.
   readonly property int snoozeMinutes: {
@@ -109,6 +119,11 @@ Panel {
   // "alarms" or "settings": what the card shows. The gear at its top left
   // swaps one for the other, and every open starts on the alarms.
   property string view: "alarms"
+  // The alarm the field is editing, in the "edit" view.
+  property var editTarget: null
+  // A repeating alarm whose remove button was clicked once: the second click,
+  // within a few seconds, deletes every occurrence.
+  property string confirmId: ""
   // Set while the file chooser is up, or by a right click on the bar icon, so
   // the next open lands on the settings.
   property bool reopenOnSettings: false
@@ -227,9 +242,18 @@ Panel {
 
   readonly property bool nextIsSoon: ringingCount > 0 || isSoon(nextAlarm)
 
+  // The countdown shows from countdownMinutes before the next alarm, or as
+  // soon as one is set with 0: an alarm that rings tomorrow, a repeat above
+  // all, is nothing to keep in the bar until then.
+  readonly property int countdownMinutes: {
+    var minutes = Number(setting("countdownMinutes", 60))
+    return minutes >= 0 && minutes <= 1440 ? Math.floor(minutes) : 60
+  }
+  readonly property bool upcoming: !!nextAlarm && (countdownMinutes === 0 || Number(nextAlarm.at) - nowSeconds <= countdownMinutes * 60)
+
   readonly property string barLabel: {
     if (ringingCount > 0) return "now"
-    if (!nextAlarm) return ""
+    if (!upcoming) return ""
     return remainingFor(nextAlarm)
   }
 
@@ -249,10 +273,11 @@ Panel {
     + (barLabel !== "" ? Math.ceil(barMetrics.width) + Style.space(5) : 0)
     + Style.space(14)
 
-  // With hideWhenIdle, a Nag with no alarm behaves like Omarchy's indicators:
-  // no slot until the pointer comes onto the bar, then a dimmed icon to click.
+  // With hideWhenIdle, a Nag with no alarm coming up behaves like Omarchy's
+  // indicators: no slot until the pointer comes onto the bar, then a dimmed
+  // icon to click.
   readonly property bool hideWhenIdle: setting("hideWhenIdle", false) === true
-  readonly property bool idle: alarms.length === 0 && !opened
+  readonly property bool idle: ringingCount === 0 && !upcoming && !opened
   readonly property bool barPeek: !!bar && bar.centerSectionRevealHeld === true && bar.centerHoverRevealSuppressed !== true
   readonly property bool shown: !hideWhenIdle || !idle || barPeek
   readonly property int shownSlot: shown ? barSlot : 0
@@ -299,7 +324,12 @@ Panel {
     if (text.length === 0) return
     if (preview && preview.ok === false) missingTime = true
     if (!preview || preview.ok !== true) return
-    runAction(["set", text])
+    if (view === "edit" && editTarget) {
+      runAction(["edit", String(editTarget.id), text])
+      showView("alarms")
+    } else {
+      runAction(["set", text])
+    }
     draft = ""
     preview = null
   }
@@ -307,6 +337,32 @@ Panel {
   // Cancels a pending alarm, or stops a ringing one.
   function removeAlarm(id) { runAction(["cancel", String(id)]) }
   function snoozeAlarm(id) { runAction(["snooze", String(id), String(snoozeMinutes)]) }
+  function skipAlarm(id) { runAction(["skip", String(id)]) }
+
+  // The remove button and Delete. A repeat goes on the second press, so one
+  // slip does not lose every occurrence.
+  function removeRow(alarm) {
+    if (alarm.repeat && !alarm.ringing && confirmId !== String(alarm.id)) {
+      confirmId = String(alarm.id)
+      confirmReset.restart()
+      return
+    }
+    confirmId = ""
+    removeAlarm(alarm.id)
+  }
+
+  // The field, filled with the alarm as text, in a view of its own: Enter
+  // replaces the alarm with what it then says. A ringing alarm comes back as
+  // a snooze to adjust, since its own time has gone.
+  function startEdit(alarm) {
+    editTarget = alarm
+    cursor = -1
+    missingTime = false
+    actionError = ""
+    draft = alarm.ringing ? snoozeMinutes + "m " + (alarm.message || "") : String(alarm.spec || "")
+    showView("edit")
+    requestPreview()
+  }
 
   // What Enter on a ringing alarm does: snooze, the only thing worth one key
   // when an alarm is going off in front of you, or dismiss with snooze off.
@@ -355,9 +411,15 @@ Panel {
   }
 
   function showView(next) {
+    if (view === "edit" && next !== "edit") {
+      editTarget = null
+      draft = ""
+      preview = null
+      missingTime = false
+    }
     view = next
-    if (next === "alarms") Qt.callLater(function() { inputField.forceActiveFocus() })
-    else keyCatcher.forceActiveFocus()
+    if (next === "settings") keyCatcher.forceActiveFocus()
+    else Qt.callLater(function() { inputField.forceActiveFocus() })
   }
 
   function requestPreview() {
@@ -632,6 +694,8 @@ Panel {
     onTriggered: root.nowSeconds = Math.floor(Date.now() / 1000)
   }
 
+  Timer { id: confirmReset; interval: 3000; onTriggered: root.confirmId = "" }
+
   Timer {
     id: fireTimer
     repeat: false
@@ -686,6 +750,8 @@ Panel {
     actionError = ""
     missingTime = false
     cursor = -1
+    editTarget = null
+    confirmId = ""
     view = reopenOnSettings ? "settings" : "alarms"
     reopenOnSettings = false
 
@@ -730,7 +796,7 @@ Panel {
           renderType: Text.NativeRendering
           color: root.nextIsSoon
             ? root.urgent
-            : (root.opened || root.nextAlarm ? root.accent : root.foreground)
+            : (root.opened || root.upcoming ? root.accent : root.foreground)
 
           // A ringing alarm has to be visible from across the room, and it
           // keeps pulsing until it is answered. That is the whole product.
@@ -816,8 +882,8 @@ Panel {
 
       Keys.onPressed: function(event) {
         if (event.key === Qt.Key_Escape) {
-          // Out of the settings first, then out of the panel.
-          if (root.view === "settings") root.showView("alarms")
+          // Out of the settings or the edit first, then out of the panel.
+          if (root.view !== "alarms") root.showView("alarms")
           else root.close()
           event.accepted = true
         }
@@ -844,7 +910,7 @@ Panel {
 
             PanelActionButton {
               anchors.verticalCenter: parent.verticalCenter
-              visible: root.view === "settings"
+              visible: root.view !== "alarms"
               focusable: false
               iconText: root.iconBack
               tooltipText: "Back"
@@ -856,7 +922,7 @@ Panel {
             Text {
               anchors.verticalCenter: parent.verticalCenter
               textFormat: Text.PlainText
-              text: root.view === "settings" ? "Settings" : "New alarm"
+              text: root.view === "settings" ? "Settings" : root.view === "edit" ? "Edit alarm" : "New alarm"
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               color: Qt.darker(root.foreground, 1.5)
@@ -878,7 +944,7 @@ Panel {
 
         TextField {
           id: inputField
-          visible: root.view === "alarms"
+          visible: root.view !== "settings"
           width: parent.width
           foreground: root.foreground
           accent: root.accent
@@ -909,12 +975,12 @@ Panel {
 
             switch (event.key) {
             case Qt.Key_Down:
-              root.moveCursor(1)
+              if (root.view === "alarms") root.moveCursor(1)
               event.accepted = true
               return
 
             case Qt.Key_Up:
-              root.moveCursor(-1)
+              if (root.view === "alarms") root.moveCursor(-1)
               event.accepted = true
               return
 
@@ -932,7 +998,7 @@ Panel {
             case Qt.Key_Delete:
               if (onRow) {
                 var target = root.cursorAlarm()
-                if (target) root.removeAlarm(target.id)
+                if (target) root.removeRow(target)
                 event.accepted = true
               }
               return
@@ -972,7 +1038,8 @@ Panel {
           // would move the whole list up and down on the keystroke that makes a
           // time valid. With no list there is nothing to move, and a blank row
           // would only pad the bottom of the panel.
-          visible: root.view === "alarms" && (root.alarms.length > 0 || text !== " ")
+          visible: root.view === "edit" ? text !== " "
+            : root.view === "alarms" && (root.alarms.length > 0 || text !== " ")
           text: {
             if (root.actionError !== "") return root.actionError
             if (root.missingTime) return "No time in that, add one: 5m, 15:15"
@@ -1057,6 +1124,17 @@ Panel {
 
                   Text {
                     anchors.verticalCenter: parent.verticalCenter
+                    visible: !!modelData.repeatLabel
+                    textFormat: Text.PlainText
+                    text: root.iconRepeat + " " + root.plain(modelData.repeatLabel)
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    renderType: Text.NativeRendering
+                    color: Qt.darker(root.foreground, 1.6)
+                  }
+
+                  Text {
+                    anchors.verticalCenter: parent.verticalCenter
                     width: Math.max(0, rowText.width - x)
                     textFormat: Text.PlainText
                     elide: Text.ElideRight
@@ -1089,14 +1167,43 @@ Panel {
                     onClicked: root.snoozeAlarm(modelData.id)
                   }
 
+                  // Skip, for a repeat that is not ringing yet.
                   PanelActionButton {
                     anchors.verticalCenter: parent.verticalCenter
+                    visible: !modelData.ringing && !!modelData.repeat
                     focusable: false
-                    iconText: root.iconClose
-                    tooltipText: modelData.ringing ? "Dismiss" : "Remove"
+                    iconText: root.iconSkip
+                    tooltipText: "Skip this one"
                     foreground: rowColor
                     fontFamily: root.fontFamily
-                    onClicked: root.removeAlarm(modelData.id)
+                    onClicked: root.skipAlarm(modelData.id)
+                  }
+
+                  // Edit, for every alarm, except a ringing one that offers
+                  // a snooze instead: with snooze off, editing is how it is
+                  // put off.
+                  PanelActionButton {
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: !(modelData.ringing && root.snoozeOn)
+                    focusable: false
+                    iconText: root.iconEdit
+                    tooltipText: modelData.ringing ? "Put off" : "Edit"
+                    foreground: rowColor
+                    fontFamily: root.fontFamily
+                    onClicked: root.startEdit(modelData)
+                  }
+
+                  PanelActionButton {
+                    readonly property bool confirming: root.confirmId === String(modelData.id)
+                    anchors.verticalCenter: parent.verticalCenter
+                    focusable: false
+                    iconText: confirming ? root.iconTrash : root.iconClose
+                    tooltipText: modelData.ringing ? "Dismiss"
+                      : confirming ? "Click again to delete every occurrence"
+                      : modelData.repeat ? "Delete the repeat" : "Remove"
+                    foreground: confirming ? root.urgent : rowColor
+                    fontFamily: root.fontFamily
+                    onClicked: root.removeRow(modelData)
                   }
                 }
               }
@@ -1124,7 +1231,7 @@ Panel {
             SettingCard {
               fontFamily: root.fontFamily
               label: "Show the icon"
-              description: "With no alarm set"
+              description: "With no alarm coming up"
 
               ButtonGroup {
                 value: root.hideWhenIdle ? "hover" : "always"
@@ -1136,6 +1243,22 @@ Panel {
                   { value: "hover", label: "On hover" }
                 ]
                 onChanged: function(value) { root.writeSetting("hideWhenIdle", value === "hover") }
+              }
+            }
+
+            SettingCard {
+              fontFamily: root.fontFamily
+              label: "Countdown"
+              description: "Minutes before the next alarm it shows from, 0 as soon as one is set"
+
+              NumberField {
+                from: 0
+                to: 1440
+                value: root.countdownMinutes
+                foreground: root.foreground
+                accent: root.accent
+                fontFamily: root.fontFamily
+                onModified: function(value) { root.writeSetting("countdownMinutes", value) }
               }
             }
 
@@ -1159,6 +1282,28 @@ Panel {
                   { value: "\uDB80\uDC9A", label: "\uDB80\uDC9A", tooltip: "Bell" }
                 ]
                 onChanged: function(value) { root.writeSetting("icon", value) }
+              }
+            }
+          }
+
+          SettingsSection {
+            title: "Ringing"
+            hasSwitch: false
+            fontFamily: root.fontFamily
+
+            SettingCard {
+              fontFamily: root.fontFamily
+              label: "Ring for"
+              description: "Minutes an alarm rings before it is reported missed"
+
+              NumberField {
+                from: 1
+                to: 60
+                value: root.ringMinutes
+                foreground: root.foreground
+                accent: root.accent
+                fontFamily: root.fontFamily
+                onModified: function(value) { root.writeSetting("ringMinutes", value) }
               }
             }
           }

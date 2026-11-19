@@ -546,12 +546,11 @@ Panel {
   onSoundPathChanged: soundPreview.running = false
 
   // A settings section: its title in the accent, with the section's own
-  // on/off switch beside it when it has one and a line saying what that
-  // switch does, then the section's cards, which fold away while it is off.
+  // on/off switch beside it when it has one, then the section's cards, which
+  // fold away while it is off.
   component SettingsSection: Column {
     id: section
     property string title: ""
-    property string description: ""
     property bool checked: true
     property bool hasSwitch: true
     property string fontFamily: Style.font.family
@@ -583,16 +582,6 @@ Panel {
           font.bold: true
         }
 
-        Text {
-          width: parent.width
-          visible: section.description !== ""
-          textFormat: Text.PlainText
-          text: section.description
-          color: Qt.darker(Commons.Color.foreground, 1.5)
-          font.family: section.fontFamily
-          font.pixelSize: Style.font.caption
-          wrapMode: Text.WordWrap
-        }
       }
 
       ToggleSwitch {
@@ -1340,29 +1329,39 @@ Panel {
             }
           }
 
-          // An alarm going off, in one section: the sound and how it plays,
-          // and how long it rings. The sound details fold away with its
-          // switch; how long it rings stays, since an alarm rings in the bar
-          // and the notification with or without a sound.
+          // Whether it rings or not, an alarm nobody answers ends up missed.
           SettingsSection {
-            title: "Ringing"
+            title: "Missed"
             hasSwitch: false
             fontFamily: root.fontFamily
 
-            Toggle {
-              width: parent.width
-              label: "Sound"
-              description: root.soundOn ? "Plays when an alarm goes off" : "Alarms ring silently, in the bar and the notification"
-              checked: root.soundOn
-              foreground: root.foreground
-              accent: root.accent
+            SettingCard {
               fontFamily: root.fontFamily
-              onClicked: root.writeSetting("soundOn", !root.soundOn)
+              label: "Missed after"
+              description: "Minutes without an answer before an alarm is marked missed"
+
+              NumberField {
+                from: 1
+                to: 60
+                value: root.ringMinutes
+                foreground: root.foreground
+                accent: root.accent
+                fontFamily: root.fontFamily
+                onModified: function(value) { root.writeSetting("ringMinutes", value) }
+              }
             }
+          }
+
+          // The file and how it plays only matter with a sound, so they fold
+          // away with it.
+          SettingsSection {
+            title: "Sound"
+            checked: root.soundOn
+            fontFamily: root.fontFamily
+            onToggled: root.writeSetting("soundOn", !root.soundOn)
 
             SettingCard {
               fontFamily: root.fontFamily
-              visible: root.soundOn
               label: "Sound file"
               description: "Add your own sounds to " + root.soundsDir.replace(Quickshell.env("HOME"), "~")
 
@@ -1417,7 +1416,6 @@ Panel {
 
             SettingCard {
               fontFamily: root.fontFamily
-              visible: root.soundOn
               label: "Plays"
               description: !root.soundRepeat ? "Once, when the alarm goes off"
                 : root.snoozeOn ? "Again until you snooze or dismiss" : "Again until you dismiss"
@@ -1437,7 +1435,7 @@ Panel {
 
             SettingCard {
               fontFamily: root.fontFamily
-              visible: root.soundOn && root.soundRepeat
+              visible: root.soundRepeat
               label: "Pause between plays"
               description: "Seconds of silence before it plays again"
 
@@ -1451,29 +1449,12 @@ Panel {
                 onModified: function(value) { root.writeSetting("soundPause", value) }
               }
             }
-
-            SettingCard {
-              fontFamily: root.fontFamily
-              label: "Missed after"
-              description: "Minutes an unanswered alarm rings before it is marked missed"
-
-              NumberField {
-                from: 1
-                to: 60
-                value: root.ringMinutes
-                foreground: root.foreground
-                accent: root.accent
-                fontFamily: root.fontFamily
-                onModified: function(value) { root.writeSetting("ringMinutes", value) }
-              }
-            }
           }
 
-          // Not part of ringing: with the sound off, a snooze is still how a
+          // Not part of the sound: with it off, a snooze is still how a
           // notification comes back in five minutes.
           SettingsSection {
             title: "Snooze"
-            description: root.snoozeOn ? "A snooze button in the panel and the notification" : "Ringing alarms can only be dismissed"
             checked: root.snoozeOn
             fontFamily: root.fontFamily
             onToggled: root.writeSetting("snoozeOn", !root.snoozeOn)

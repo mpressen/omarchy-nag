@@ -62,7 +62,7 @@ Every row has an edit button: the field comes back with the alarm as text (`ever
 
 ## When it goes off
 
-A critical notification, the freedesktop alarm sound repeating until you snooze or dismiss it, and the bar widget pulsing red. The alarm keeps ringing in the panel until you dismiss or snooze it, because an alarm that clears itself after a few seconds is one you can miss, and missing it is the whole thing this is meant to prevent. It rings for five minutes at most (the Ring for setting); an alarm nobody answers in that time stops, and its notification turns into a "Missed" one. The notification has Snooze and Dismiss buttons, clicking the card snoozes, and closing it with its X dismisses the alarm. On Omarchy before 4.5, which has no notification buttons, clicking it opens the panel instead.
+A critical notification, the freedesktop alarm sound repeating until you snooze or dismiss it, and the bar widget pulsing red. The alarm keeps ringing in the panel until you dismiss or snooze it, because an alarm that clears itself after a few seconds is one you can miss, and missing it is the whole thing this is meant to prevent. After five minutes with no answer (the Missed after setting), sound or no sound, it stops and its notification turns into a "Missed" one, with no buttons, that stays until you close it. The notification has Snooze and Dismiss buttons, clicking the card snoozes, and closing it with its X dismisses the alarm. On Omarchy before 4.5, which has no notification buttons, clicking it opens the panel instead.
 
 ## Setting one from anywhere
 
@@ -116,7 +116,7 @@ Nothing to configure, no account, no API key. It needs `jq`, `dd`, `date` and `s
 
 Alarms are systemd user timers, set with `--on-calendar` against wall-clock time. That is what makes them survive a shell restart, a Quickshell crash and a suspend. It is also the one behavioural difference from the built-in `omarchy reminder`, which uses `--on-active`: those count monotonic seconds, which stop while the machine sleeps, so a reminder set for 15:15 fires late by however long the lid was shut.
 
-Every alarm is written to disk as well, and the plugin re-arms any timer that has gone missing while its time is still ahead. That covers a reboot, which transient systemd units do not survive on their own. An alarm whose time went by while the machine was off still rings if it is only a few minutes late (within Ring for), and is otherwise reported as missed rather than dropped; a repeat moves on to its next occurrence.
+Every alarm is written to disk as well, and the plugin re-arms any timer that has gone missing while its time is still ahead. That covers a reboot, which transient systemd units do not survive on their own. An alarm whose time went by while the machine was off still rings if it is only a few minutes late (within Missed after), and is otherwise reported as missed rather than dropped; a repeat moves on to its next occurrence.
 
 There is no network access of any kind. Nothing is sent anywhere, and nothing is fetched.
 

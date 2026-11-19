@@ -516,6 +516,23 @@ next_occurrence() {
   return 1
 }
 
+# The last moment before the epoch in $2 that the repeat in $1 names, the way
+# back from next_occurrence.
+previous_occurrence() {
+  local repeat=$1 before=$2 time days i day at
+  time=$(jq -r '.time' <<<"$repeat")
+  days=" $(jq -r '.days | map(tostring) | join(" ")' <<<"$repeat") "
+  for ((i = 0; i <= 7; i++)); do
+    day=$(date -d "$(date -d "@$before" +%F) -$i day" +%F)
+    at=$(date -d "$day $time" +%s 2>/dev/null) || continue
+    if ((at < before)) && [[ $days == *" $(date -d "@$at" +%u) "* ]]; then
+      printf '%d' "$at"
+      return 0
+    fi
+  done
+  return 1
+}
+
 # Split "15:15 pick up the kids" into a time and a message by trying the longest
 # leading run of words that resolves, down to one. Longest first is what lets
 # "tomorrow 9:00 dentist" and "next wednesday 18:15 hockey" work without the
@@ -851,7 +868,8 @@ cmd_skip() {
   schedule_parsed
 }
 
-# Undo the skips of a repeat: it goes back to its next occurrence from now.
+# Undo one skip of a repeat: it goes back to the occurrence before, never to
+# one already past.
 cmd_unskip() {
   begin_write
   local id=${1:-}
@@ -862,7 +880,12 @@ cmd_unskip() {
   [[ $ALARM_REPEAT != null ]] || die "not a repeating alarm"
 
   local PARSED_AT PARSED_MESSAGE=$ALARM_MESSAGE PARSED_REPEAT=$ALARM_REPEAT PARSED_RELATIVE=false
-  PARSED_AT=$(next_occurrence "$ALARM_REPEAT" "$(date +%s)") || die "no next occurrence"
+  local now previous
+  now=$(date +%s)
+  PARSED_AT=$(next_occurrence "$ALARM_REPEAT" "$now") || die "no next occurrence"
+  if previous=$(previous_occurrence "$ALARM_REPEAT" "$ALARM_AT") && ((previous > now)); then
+    PARSED_AT=$previous
+  fi
   cancel_alarm "$id"
   schedule_parsed
 }
@@ -996,7 +1019,7 @@ Usage: nag set <time> [message]     15:15 pick up the kids | 5m tea | tomorrow 9
        nag list                     every alarm as JSON
        nag snooze <id> [minutes]    default 5, or the snoozeMinutes setting
        nag skip <id>                skip the next occurrence of a repeat
-       nag unskip <id>              back to the next occurrence, undoing skips
+       nag unskip <id>              undo one skip of a repeat
        nag edit <id> <time> [message]
        nag dismiss <id>
        nag cancel <id>

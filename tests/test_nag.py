@@ -555,14 +555,17 @@ class RecurrenceTest(NagTestCase):
         self.assertEqual([a["id"] for a in self.alarms()], [skipped["id"]])
         self.assertEqual(self.timers(), [f"nag-{skipped['id']}.timer"])
 
-    def test_unskip_goes_back_to_the_next_occurrence(self):
+    def test_unskip_goes_back_one_occurrence(self):
         alarm = self.set("every mon, thu 7:30 gym")
         self.assertFalse(alarm["skipped"])
-        skipped = self.nag("skip", alarm["id"])
-        skipped = self.nag("skip", skipped["id"])
+        once = self.nag("skip", alarm["id"])
+        twice = self.nag("skip", once["id"])
         [listed] = self.alarms()
         self.assertTrue(listed["skipped"])
-        back = self.nag("unskip", skipped["id"])
+        back = self.nag("unskip", twice["id"])
+        self.assertEqual(back["at"], once["at"])
+        self.assertTrue(back["skipped"])
+        back = self.nag("unskip", back["id"])
         self.assertEqual(back["at"], alarm["at"])
         self.assertFalse(back["skipped"])
         self.assertEqual(self.timers(), [f"nag-{back['id']}.timer"])

@@ -190,6 +190,20 @@ Panel {
     return secs + "s"
   }
 
+  // A duration alarm as the field takes it back, from what is left now: the
+  // same shapes as duration_spec in bin/nag ("36s", "5m", "2h 23m"). The spec
+  // in the list is as old as the last refresh, up to half a minute, so editing
+  // from it would put back time that has already run out.
+  function durationSpec(seconds) {
+    if (seconds < 1) seconds = 1
+    if (seconds < 60) return seconds + "s"
+    var minutes = Math.ceil(seconds / 60), parts = []
+    if (minutes >= 1440) parts.push(Math.floor(minutes / 1440) + "d")
+    if (minutes % 1440 >= 60) parts.push(Math.floor((minutes % 1440) / 60) + "h")
+    if (minutes % 60) parts.push((minutes % 60) + "m")
+    return parts.join(" ")
+  }
+
   function remainingFor(alarm) {
     if (!alarm) return ""
     if (alarm.ringing) return "now"
@@ -359,7 +373,10 @@ Panel {
     cursor = -1
     missingTime = false
     actionError = ""
-    draft = alarm.ringing ? snoozeMinutes + "m " + (alarm.message || "") : String(alarm.spec || "")
+    if (alarm.ringing) draft = snoozeMinutes + "m " + (alarm.message || "")
+    else if (alarm.relative && !alarm.repeat)
+      draft = [durationSpec(Number(alarm.at) - nowSeconds), alarm.message || ""].filter(function(part) { return part !== "" }).join(" ")
+    else draft = String(alarm.spec || "")
     showView("edit")
     requestPreview()
   }

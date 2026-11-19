@@ -96,13 +96,9 @@ omarchy bar move jankeesvw.nag --section right
 
 Update an installed copy with `omarchy plugin update jankeesvw.nag`.
 
-The countdown shows in the bar from an hour before the next alarm (`countdownMinutes`, 0 for as soon as one is set), so a repeat that rings tomorrow does not sit in the bar all day.
+The countdown shows in the bar from an hour before the next alarm (`countdownMinutes`, 0 for as soon as one is set), so a repeat that rings tomorrow does not sit in the bar all day. With `countdownOn` false the bar shows nothing before an alarm rings.
 
-To keep the bar clear while no alarm is coming up, the way Omarchy's own indicators stay hidden until the pointer comes onto the bar:
-
-```sh
-omarchy bar set jankeesvw.nag hideWhenIdle true --json
-```
+While no alarm is coming up, the icon stays hidden until the pointer comes onto the bar, the way Omarchy's own indicators do.
 
 To wear another glyph than the timer, in the bar and on the notifications, for instance Omarchy's reminder bell where Nag replaces the reminder:
 

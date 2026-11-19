@@ -259,12 +259,14 @@ Panel {
 
   // The countdown shows from countdownMinutes before the next alarm, or as
   // soon as one is set with 0: an alarm that rings tomorrow, a repeat above
-  // all, is nothing to keep in the bar until then.
+  // all, is nothing to keep in the bar until then. With countdownOn false the
+  // bar shows nothing before an alarm rings.
+  readonly property bool countdownOn: setting("countdownOn", true) !== false
   readonly property int countdownMinutes: {
     var minutes = Number(setting("countdownMinutes", 60))
     return minutes >= 0 && minutes <= 1440 ? Math.floor(minutes) : 60
   }
-  readonly property bool upcoming: !!nextAlarm && (countdownMinutes === 0 || Number(nextAlarm.at) - nowSeconds <= countdownMinutes * 60)
+  readonly property bool upcoming: countdownOn && !!nextAlarm && (countdownMinutes === 0 || Number(nextAlarm.at) - nowSeconds <= countdownMinutes * 60)
 
   readonly property string barLabel: {
     if (ringingCount > 0) return "now"
@@ -288,13 +290,11 @@ Panel {
     + (barLabel !== "" ? Math.ceil(barMetrics.width) + Style.space(5) : 0)
     + Style.space(14)
 
-  // With hideWhenIdle, a Nag with no alarm coming up behaves like Omarchy's
-  // indicators: no slot until the pointer comes onto the bar, then a dimmed
-  // icon to click.
-  readonly property bool hideWhenIdle: setting("hideWhenIdle", false) === true
+  // With no alarm coming up, Nag behaves like Omarchy's indicators: no slot
+  // until the pointer comes onto the bar, then a dimmed icon to click.
   readonly property bool idle: ringingCount === 0 && !upcoming && !opened
   readonly property bool barPeek: !!bar && bar.centerSectionRevealHeld === true && bar.centerHoverRevealSuppressed !== true
-  readonly property bool shown: !hideWhenIdle || !idle || barPeek
+  readonly property bool shown: !idle || barPeek
   readonly property int shownSlot: shown ? barSlot : 0
 
   readonly property bool vertical: !!bar && bar.vertical
@@ -772,7 +772,7 @@ Panel {
   BarIconButton {
     id: button
     visible: root.shown
-    opacity: root.hideWhenIdle && root.idle ? 0.45 : 1
+    opacity: root.idle ? 0.45 : 1
     anchors.fill: parent
     bar: root.bar
     slotSize: root.barSlot
@@ -1203,7 +1203,7 @@ Panel {
                     visible: !modelData.ringing && !!modelData.skipped
                     focusable: false
                     iconText: root.iconUnskip
-                    tooltipText: "Undo the skip"
+                    tooltipText: "Undo the last skip"
                     foreground: rowColor
                     fontFamily: root.fontFamily
                     onClicked: root.unskipAlarm(modelData.id)
@@ -1216,7 +1216,7 @@ Panel {
                     visible: !modelData.ringing && !!modelData.repeat
                     focusable: false
                     iconText: root.iconSkip
-                    tooltipText: "Skip this one"
+                    tooltipText: "Skip the next one"
                     foreground: rowColor
                     fontFamily: root.fontFamily
                     onClicked: root.skipAlarm(modelData.id)
@@ -1235,7 +1235,7 @@ Panel {
                     // Smaller glyph, same box, so the row keeps its rhythm.
                     fontSize: Math.round(Style.font.icon * 0.75)
                     size: skipButton.size
-                    tooltipText: modelData.ringing ? "Put off" : "Edit"
+                    tooltipText: modelData.ringing ? "Change the time" : "Edit"
                     foreground: rowColor
                     fontFamily: root.fontFamily
                     onClicked: root.startEdit(modelData)
@@ -1274,30 +1274,22 @@ Panel {
             hasSwitch: false
             fontFamily: root.fontFamily
 
-            // The icon is always in the bar; with no alarm set, this says
-            // whether it shows all the time or only on hover.
-            SettingCard {
+            Toggle {
+              width: parent.width
+              label: "Countdown"
+              description: root.countdownOn ? "The bar counts down to the next alarm" : "Nothing in the bar until an alarm rings"
+              checked: root.countdownOn
+              foreground: root.foreground
+              accent: root.accent
               fontFamily: root.fontFamily
-              label: "Show the icon"
-              description: "With no alarm coming up"
-
-              ButtonGroup {
-                value: root.hideWhenIdle ? "hover" : "always"
-                foreground: root.foreground
-                accent: root.accent
-                fontFamily: root.fontFamily
-                options: [
-                  { value: "always", label: "Always" },
-                  { value: "hover", label: "On hover" }
-                ]
-                onChanged: function(value) { root.writeSetting("hideWhenIdle", value === "hover") }
-              }
+              onClicked: root.writeSetting("countdownOn", !root.countdownOn)
             }
 
             SettingCard {
               fontFamily: root.fontFamily
-              label: "Countdown"
-              description: "Minutes before the next alarm it shows from, 0 as soon as one is set"
+              visible: root.countdownOn
+              label: "Countdown starts"
+              description: "Minutes before the alarm, 0 for as soon as it is set"
 
               NumberField {
                 from: 0
@@ -1315,7 +1307,7 @@ Panel {
             SettingCard {
               fontFamily: root.fontFamily
               label: "Icon"
-              description: "In the bar and on the notification"
+              description: "In the bar and on notifications"
 
               ButtonGroup {
                 value: String(root.setting("icon", "") || "")
@@ -1343,7 +1335,7 @@ Panel {
             SettingCard {
               fontFamily: root.fontFamily
               label: "Missed after"
-              description: "Minutes without an answer before an alarm is marked missed"
+              description: "Minutes with no snooze or dismiss before an alarm stops and shows as missed"
 
               NumberField {
                 from: 1
@@ -1368,7 +1360,7 @@ Panel {
             SettingCard {
               fontFamily: root.fontFamily
               label: "Sound file"
-              description: "Add your own sounds to " + root.soundsDir.replace(Quickshell.env("HOME"), "~")
+              description: "Put your own sounds in " + root.soundsDir.replace(Quickshell.env("HOME"), "~")
 
               below: Row {
                 width: parent.width
@@ -1422,8 +1414,8 @@ Panel {
             SettingCard {
               fontFamily: root.fontFamily
               label: "Plays"
-              description: !root.soundRepeat ? "Once, when the alarm goes off"
-                : root.snoozeOn ? "Again until you snooze or dismiss" : "Again until you dismiss"
+              description: !root.soundRepeat ? "A single time when the alarm goes off"
+                : root.snoozeOn ? "Over and over until you snooze or dismiss" : "Over and over until you dismiss"
 
               ButtonGroup {
                 value: root.soundRepeat ? "repeat" : "once"
@@ -1442,7 +1434,7 @@ Panel {
               fontFamily: root.fontFamily
               visible: root.soundRepeat
               label: "Pause between plays"
-              description: "Seconds of silence before it plays again"
+              description: "Seconds of silence between two plays"
 
               NumberField {
                 from: 0
@@ -1466,8 +1458,8 @@ Panel {
 
             SettingCard {
               fontFamily: root.fontFamily
-              label: "Snooze length"
-              description: "Minutes a snooze puts the alarm off"
+              label: "Snooze for"
+              description: "Minutes before a snoozed alarm rings again"
 
               NumberField {
                 from: 1

@@ -244,22 +244,28 @@ alarm_json() {
     --argjson repeat "$repeat" --argjson relative "$relative" --argjson skipped "$skipped" '
     def short: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
     def long: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+    def ordinal: tostring as $n |
+      if (. % 100) >= 11 and (. % 100) <= 13 then $n + "th"
+      elif . % 10 == 1 then $n + "st" elif . % 10 == 2 then $n + "nd" elif . % 10 == 3 then $n + "rd"
+      else $n + "th" end;
     # [phrase, list label, the words the field takes back]
-    def words: .days as $d | ($d | map(tostring) | join(",")) as $key |
-      if $key == "1,2,3,4,5,6,7" then ["every day", "daily", "day"]
-      elif $key == "1,2,3,4,5" then ["every weekday", "weekdays", "weekday"]
-      elif $key == "6,7" then ["every weekend", "weekends", "weekend"]
-      elif ($d | length) == 1 then ["every " + long[$d[0] - 1], short[$d[0] - 1], (short[$d[0] - 1] | ascii_downcase)]
+    def words: if .monthday then
+        ["every month on the " + (.monthday | ordinal), "monthly", "monthly " + (.monthday | tostring)]
+      else .days as $d | ($d | map(tostring) | join(",")) as $key |
+      if $key == "1,2,3,4,5,6,7" then ["every day", "daily", "every day"]
+      elif $key == "1,2,3,4,5" then ["every weekday", "weekdays", "every weekday"]
+      elif $key == "6,7" then ["every weekend", "weekends", "every weekend"]
+      elif ($d | length) == 1 then ["every " + long[$d[0] - 1], short[$d[0] - 1], "every " + (short[$d[0] - 1] | ascii_downcase)]
       else ["every " + ($d[:-1] | map(short[. - 1]) | join(", ")) + " and " + short[$d[-1] - 1],
-            ($d | map(short[. - 1]) | join(" ")), ($d | map(short[. - 1] | ascii_downcase) | join(","))]
-      end;
+            ($d | map(short[. - 1]) | join(" ")), "every " + ($d | map(short[. - 1] | ascii_downcase) | join(","))]
+      end end;
     def text: map(select(. != "")) | join(" ");
     {id: $id, at: $at, message: $message, atLabel: $atLabel, atPhrase: $atPhrase,
      remaining: $remaining, remainingSeconds: $remainingSeconds, ringing: false,
      repeat: null, repeatLabel: null, relative: $relative, spec: ([$spec, $message] | text)}
     + if $repeat then ($repeat | words) as $w |
         {repeat: $repeat, repeatLabel: $w[1], atPhrase: ($w[0] + " at " + $repeat.time), skipped: $skipped,
-         spec: (["every", $w[2], $repeat.time, $message] | text)}
+         spec: ([$w[2], $repeat.time, $message] | text)}
       else {} end'
 }
 
@@ -393,7 +399,10 @@ resolve_spec() {
 # ---------------------------------------------------------------------------
 
 # A repeat is a set of ISO weekdays (1 Monday .. 7 Sunday) and a clock time,
-# stored with the alarm as {"days": [1, 2, 3, 4, 5], "time": "17:00"}. Each
+# stored with the alarm as {"days": [1, 2, 3, 4, 5], "time": "17:00"}, or a
+# day of the month and a clock time, {"monthday": 31, "time": "09:00"}. A
+# month without that day gets its last day instead, and the month after is
+# back on the 31st: the day asked for is what is kept, never the day used. Each
 # occurrence is an ordinary one-shot alarm, and firing one sets the next: the
 # series is never a timer of its own, so a snooze, a dismiss or a skip acts on
 # one occurrence and cannot move the others.
@@ -442,27 +451,57 @@ clock_time() {
 }
 
 # "every fri 15:00 standup", "every weekday at 17 leave", "daily 9:00 water",
-# "every mon, wed and fri 7:30 run", "17:00 every weekday leave". The keyword
+# "every mon, wed and fri 7:30 run", "17:00 every weekday leave",
+# "monthly 15 9:00 rent", "every month on the 1st at 8 pay". The keyword
 # is what makes it a repeat: "fri 15:00" alone is still next Friday, once, and
 # a time is required, because a repeat at a guessed hour is one you sleep
-# through.
+# through. A monthly repeat without a day takes today's; a bare number after
+# "monthly" is the day only when a time follows it, and "monthly 15 rent" is
+# refused: the 15th or 15:00 is a guess, and a wrong one rings on the wrong
+# day.
 #
 # Sets PARSED_AT, PARSED_MESSAGE and PARSED_REPEAT, or fails.
 parse_repeat() {
   local -a words=("$@") days=() parts
-  local i=0 time="" word part set
+  local i=0 time="" word part set monthday="" number
 
   # The time may come first.
   if time=$(clock_time "${words[0]:-}"); then i=1; else time=""; fi
   word=${words[i]:-}
   case ${word,,} in
-    every | each) i=$((i + 1)) ;;
+    every | each)
+      i=$((i + 1))
+      word=${words[i]:-}
+      if [[ ${word,,} == month ]]; then i=$((i + 1)) monthday=today; fi
+      ;;
+    monthly) i=$((i + 1)) monthday=today ;;
     daily | weekdays | workdays | weekends) ;;
     *) return 1 ;;
   esac
 
+  if [[ -n $monthday ]]; then
+    # "on the 15th", "15th", "15", or nothing for today's day.
+    word=${words[i]:-}
+    [[ ${word,,} == on ]] && i=$((i + 1))
+    word=${words[i]:-}
+    [[ ${word,,} == the ]] && i=$((i + 1))
+    word=${words[i],,}
+    word=${word:-} number=${word%%[a-z]*}
+    if [[ $word =~ ^[0-9]{1,2}(st|nd|rd|th)$ ]] ||
+      { [[ $word =~ ^[0-9]{1,2}$ ]] &&
+        { [[ -n $time ]] || [[ ${words[i + 1],,} == at ]] || clock_time "${words[i + 1]:-}" >/dev/null; }; }; then
+      monthday=$((10#$number))
+      ((monthday >= 1 && monthday <= 31)) || return 1
+      i=$((i + 1))
+    elif [[ $word =~ ^[0-9]{1,2}$ && -z $time ]]; then
+      return 1
+    else
+      monthday=$((10#$(date +%d)))
+    fi
+  fi
+
   # Day words, alone or in lists: "mon, wed and fri", "mon,wed,fri".
-  while ((i < ${#words[@]})); do
+  while [[ -z $monthday ]] && ((i < ${#words[@]})); do
     word=${words[i],,}
     if [[ $word == and ]]; then i=$((i + 1)); continue; fi
     IFS=, read -r -a parts <<<"${word%,}"
@@ -476,7 +515,7 @@ parse_repeat() {
     days+=("${parts[@]}")
     i=$((i + 1))
   done
-  ((${#days[@]})) || return 1
+  [[ -n $monthday ]] || ((${#days[@]})) || return 1
 
   if [[ -z $time ]]; then
     word=${words[i]:-}
@@ -491,8 +530,12 @@ parse_repeat() {
     fi
   fi
 
-  PARSED_REPEAT=$(printf '%s\n' "${days[@]}" | sort -nu |
-    jq -sc --arg time "$time" '{days: ., time: $time}')
+  if [[ -n $monthday ]]; then
+    PARSED_REPEAT=$(jq -cn --argjson day "$monthday" --arg time "$time" '{monthday: $day, time: $time}')
+  else
+    PARSED_REPEAT=$(printf '%s\n' "${days[@]}" | sort -nu |
+      jq -sc --arg time "$time" '{days: ., time: $time}')
+  fi
   PARSED_AT=$(next_occurrence "$PARSED_REPEAT" "$(date +%s)") || return 1
   PARSED_MESSAGE=$(clean_text "${words[*]:i}" "$MAX_MESSAGE")
 }
@@ -503,6 +546,10 @@ parse_repeat() {
 # skips that day.
 next_occurrence() {
   local repeat=$1 after=$2 time days i day at
+  if [[ $(jq -r '.monthday // empty' <<<"$repeat") ]]; then
+    month_occurrence "$repeat" "$after" +
+    return
+  fi
   time=$(jq -r '.time' <<<"$repeat")
   days=" $(jq -r '.days | map(tostring) | join(" ")' <<<"$repeat") "
   for ((i = 0; i <= 7; i++)); do
@@ -520,12 +567,38 @@ next_occurrence() {
 # back from next_occurrence.
 previous_occurrence() {
   local repeat=$1 before=$2 time days i day at
+  if [[ $(jq -r '.monthday // empty' <<<"$repeat") ]]; then
+    month_occurrence "$repeat" "$before" -
+    return
+  fi
   time=$(jq -r '.time' <<<"$repeat")
   days=" $(jq -r '.days | map(tostring) | join(" ")' <<<"$repeat") "
   for ((i = 0; i <= 7; i++)); do
     day=$(date -d "$(date -d "@$before" +%F) -$i day" +%F)
     at=$(date -d "$day $time" +%s 2>/dev/null) || continue
     if ((at < before)) && [[ $days == *" $(date -d "@$at" +%u) "* ]]; then
+      printf '%d' "$at"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# next_occurrence and previous_occurrence for a monthly repeat: the first
+# moment after (+) or the last before (-) the epoch in $2, month by month from
+# the one it falls in. Each month gets the day asked for, or its last day when
+# it is shorter, so a 31st rings on 28 February and on 31 March.
+month_occurrence() {
+  local repeat=$1 from=$2 way=$3 time monthday first i month last day at
+  time=$(jq -r '.time' <<<"$repeat")
+  monthday=$(jq -r '.monthday' <<<"$repeat")
+  first=$(date -d "@$from" +%Y-%m-01)
+  for ((i = 0; i <= 13; i++)); do
+    month=$(date -d "$first $way$i month" +%Y-%m-01)
+    last=$(date -d "$month +1 month -1 day" +%-d)
+    day=$((monthday < last ? monthday : last))
+    at=$(date -d "${month%-01}-$(printf '%02d' "$day") $time" +%s 2>/dev/null) || continue
+    if { [[ $way == + ]] && ((at > from)); } || { [[ $way == - ]] && ((at < from)); }; then
       printf '%d' "$at"
       return 0
     fi
@@ -1014,6 +1087,7 @@ usage() {
   cat <<'EOF'
 Usage: nag set <time> [message]     15:15 pick up the kids | 5m tea | tomorrow 9:00 dentist
                                     every fri 15:00 standup | every weekday 9am | daily 8:00
+                                    monthly 15 9:00 rent | every month on the 1st at 8
        nag ask                      prompt for one through the Omarchy menu overlay
        nag parse <time> [message]   resolve without setting, for the live preview
        nag list                     every alarm as JSON

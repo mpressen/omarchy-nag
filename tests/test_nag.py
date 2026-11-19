@@ -258,6 +258,17 @@ class ParsingTest(NagTestCase):
     def test_message_whitespace_and_control_characters_are_cleaned(self):
         self.assertEqual(self.parse("5m  tea \t\x07 now")["message"], "tea now")
 
+    def test_list_says_whether_the_time_was_typed_as_a_duration(self):
+        self.set("5m tea")
+        self.set("tomorrow 9:00 dentist")
+        self.set("every day 9:00 water")
+        relative = {a["message"]: a["relative"] for a in self.alarms()}
+        self.assertEqual(relative, {"tea": True, "dentist": False, "water": False})
+
+    def test_long_message_is_capped_to_fit_a_row(self):
+        alarm = self.set("5m " + "a" * 150)
+        self.assertEqual(alarm["message"], "a" * 80)
+
 
 class AlarmsTest(NagTestCase):
     def test_set_alarm_is_listed_and_timed(self):
@@ -354,6 +365,14 @@ class RingingTest(NagTestCase):
         self.assertTrue(self.nag("dismiss", alarm_id)["ok"])
         self.assertEqual(self.alarms(), [])
         self.rings[0].wait(timeout=5)
+
+    def test_answered_alarm_leaves_no_bus_monitor_running(self):
+        self.nag("dismiss", self.ring())
+        self.rings[0].wait(timeout=5)
+        monitor = os.path.join(self.root, "dbus")
+        wait_for(lambda: subprocess.run(["pgrep", "-f", monitor],
+                                        stdout=subprocess.DEVNULL).returncode == 1,
+                 what="the close watcher to stop")
 
     def test_snooze_sets_it_again_later(self):
         self.settings(sound=self.sound, snoozeMinutes=10)

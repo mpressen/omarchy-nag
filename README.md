@@ -52,7 +52,9 @@ Typing anything takes the cursor back out of the list, so you never have to thin
 
 ## Repeating alarms
 
-Each row of a repeat shows its rule (`↻ weekdays`) and has a skip button, which moves it on to the occurrence after the next one. Snooze and dismiss act on the occurrence that rings; the next one is already set by then and does not move. The remove button deletes the whole repeat, on a second click.
+Each row of a repeat is marked `↻`, with its rule on hover, and has a skip button, which moves it on to the occurrence after the next one. Snooze and dismiss act on the occurrence that rings; the next one is already set by then and does not move. The remove button deletes the whole repeat, on a second click.
+
+A row shows the time the way you typed it: `17:20` for a clock time, the countdown for `5m`, the other one on hover. A message too long for the row reads in full on hover, and is capped at 80 characters.
 
 Every row has an edit button: the field comes back with the alarm as text (`every fri 15:00 standup`, `15:15 pick up the kids`), and Enter replaces the alarm with what it then says. With snooze off, a ringing alarm has the edit button instead of snooze, to put it off by hand.
 

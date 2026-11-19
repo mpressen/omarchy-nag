@@ -1340,11 +1340,10 @@ Panel {
             }
           }
 
-          // Everything about an alarm going off, in one section: the sound
-          // and how it plays, how long it rings, how it is put off. The sound
-          // and snooze details fold away with their switch; how long it rings
-          // stays, since an alarm rings in the bar and the notification with
-          // or without a sound.
+          // An alarm going off, in one section: the sound and how it plays,
+          // and how long it rings. The sound details fold away with its
+          // switch; how long it rings stays, since an alarm rings in the bar
+          // and the notification with or without a sound.
           SettingsSection {
             title: "Ringing"
             hasSwitch: false
@@ -1468,21 +1467,19 @@ Panel {
                 onModified: function(value) { root.writeSetting("ringMinutes", value) }
               }
             }
+          }
 
-            Toggle {
-              width: parent.width
-              label: "Snooze"
-              description: root.snoozeOn ? "A snooze button in the panel and the notification" : "Ringing alarms can only be dismissed"
-              checked: root.snoozeOn
-              foreground: root.foreground
-              accent: root.accent
-              fontFamily: root.fontFamily
-              onClicked: root.writeSetting("snoozeOn", !root.snoozeOn)
-            }
+          // Not part of ringing: with the sound off, a snooze is still how a
+          // notification comes back in five minutes.
+          SettingsSection {
+            title: "Snooze"
+            description: root.snoozeOn ? "A snooze button in the panel and the notification" : "Ringing alarms can only be dismissed"
+            checked: root.snoozeOn
+            fontFamily: root.fontFamily
+            onToggled: root.writeSetting("snoozeOn", !root.snoozeOn)
 
             SettingCard {
               fontFamily: root.fontFamily
-              visible: root.snoozeOn
               label: "Snooze length"
               description: "Minutes a snooze puts the alarm off"
 

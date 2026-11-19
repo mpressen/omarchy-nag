@@ -1269,8 +1269,7 @@ Panel {
         // --- settings -------------------------------------------------------
 
         // One card per setting, each written as soon as it changes: there is no
-        // Save, the way there is none anywhere else in the shell. Sound and
-        // Snooze carry their on/off switch in their title.
+        // Save, the way there is none anywhere else in the shell.
         Column {
           width: parent.width
           visible: root.view === "settings"
@@ -1341,39 +1340,30 @@ Panel {
             }
           }
 
+          // Everything about an alarm going off, in one section: the sound
+          // and how it plays, how long it rings, how it is put off. The sound
+          // and snooze details fold away with their switch; how long it rings
+          // stays, since an alarm rings in the bar and the notification with
+          // or without a sound.
           SettingsSection {
             title: "Ringing"
             hasSwitch: false
             fontFamily: root.fontFamily
 
-            SettingCard {
+            Toggle {
+              width: parent.width
+              label: "Sound"
+              description: root.soundOn ? "Plays when an alarm goes off" : "Alarms ring silently, in the bar and the notification"
+              checked: root.soundOn
+              foreground: root.foreground
+              accent: root.accent
               fontFamily: root.fontFamily
-              label: "Ring for"
-              description: "Minutes an alarm rings before it is reported missed"
-
-              NumberField {
-                from: 1
-                to: 60
-                value: root.ringMinutes
-                foreground: root.foreground
-                accent: root.accent
-                fontFamily: root.fontFamily
-                onModified: function(value) { root.writeSetting("ringMinutes", value) }
-              }
+              onClicked: root.writeSetting("soundOn", !root.soundOn)
             }
-          }
-
-          // The file and how often it plays only matter with a sound, so they
-          // fold away with it.
-          SettingsSection {
-            title: "Sound"
-            description: root.soundOn ? "Plays when an alarm goes off" : "Alarms ring silently, in the bar and the notification"
-            checked: root.soundOn
-            fontFamily: root.fontFamily
-            onToggled: root.writeSetting("soundOn", !root.soundOn)
 
             SettingCard {
               fontFamily: root.fontFamily
+              visible: root.soundOn
               label: "Sound file"
               description: "Add your own sounds to " + root.soundsDir.replace(Quickshell.env("HOME"), "~")
 
@@ -1426,20 +1416,29 @@ Panel {
               }
             }
 
-            Toggle {
-              width: parent.width
-              label: "Repeat until answered"
-              description: !root.soundRepeat ? "Plays once" : root.snoozeOn ? "Plays again until you snooze or dismiss" : "Plays again until you dismiss"
-              checked: root.soundRepeat
-              foreground: root.foreground
-              accent: root.accent
+            SettingCard {
               fontFamily: root.fontFamily
-              onClicked: root.writeSetting("soundRepeat", !root.soundRepeat)
+              visible: root.soundOn
+              label: "Plays"
+              description: !root.soundRepeat ? "Once, when the alarm goes off"
+                : root.snoozeOn ? "Again until you snooze or dismiss" : "Again until you dismiss"
+
+              ButtonGroup {
+                value: root.soundRepeat ? "repeat" : "once"
+                foreground: root.foreground
+                accent: root.accent
+                fontFamily: root.fontFamily
+                options: [
+                  { value: "once", label: "Once" },
+                  { value: "repeat", label: "Until answered" }
+                ]
+                onChanged: function(value) { root.writeSetting("soundRepeat", value === "repeat") }
+              }
             }
 
             SettingCard {
               fontFamily: root.fontFamily
-              visible: root.soundRepeat
+              visible: root.soundOn && root.soundRepeat
               label: "Pause between plays"
               description: "Seconds of silence before it plays again"
 
@@ -1453,17 +1452,37 @@ Panel {
                 onModified: function(value) { root.writeSetting("soundPause", value) }
               }
             }
-          }
-
-          SettingsSection {
-            title: "Snooze"
-            description: root.snoozeOn ? "A snooze button in the panel and the notification" : "Ringing alarms can only be dismissed"
-            checked: root.snoozeOn
-            fontFamily: root.fontFamily
-            onToggled: root.writeSetting("snoozeOn", !root.snoozeOn)
 
             SettingCard {
               fontFamily: root.fontFamily
+              label: "Missed after"
+              description: "Minutes an unanswered alarm rings before it is marked missed"
+
+              NumberField {
+                from: 1
+                to: 60
+                value: root.ringMinutes
+                foreground: root.foreground
+                accent: root.accent
+                fontFamily: root.fontFamily
+                onModified: function(value) { root.writeSetting("ringMinutes", value) }
+              }
+            }
+
+            Toggle {
+              width: parent.width
+              label: "Snooze"
+              description: root.snoozeOn ? "A snooze button in the panel and the notification" : "Ringing alarms can only be dismissed"
+              checked: root.snoozeOn
+              foreground: root.foreground
+              accent: root.accent
+              fontFamily: root.fontFamily
+              onClicked: root.writeSetting("snoozeOn", !root.snoozeOn)
+            }
+
+            SettingCard {
+              fontFamily: root.fontFamily
+              visible: root.snoozeOn
               label: "Snooze length"
               description: "Minutes a snooze puts the alarm off"
 

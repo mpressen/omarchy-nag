@@ -856,14 +856,15 @@ Panel {
 
     BorderSurface {
       id: card
+      readonly property real naturalHeight: contentTopInset + content.implicitHeight + contentBottomInset
       width: Math.min(Style.space(420), panel.width - Style.gapsOut * 2)
-      height: Math.min(contentTopInset + content.implicitHeight + contentBottomInset,
-                       panel.height - y - Style.gapsOut)
+      height: Math.min(naturalHeight, panel.height - y - Style.gapsOut)
       // Centred across, and pinned at a third of the way down rather than
       // centred: the card grows as alarms are added, and a card centred on its
-      // own height would move up by half a row each time.
+      // own height would move up by half a row each time. A card too tall for
+      // that, the settings, is centred instead of running off the bottom.
       x: Math.round((panel.width - width) / 2)
-      y: Math.round(panel.height * 0.3)
+      y: Math.round(Math.max(Style.gapsOut, Math.min(panel.height * 0.3, (panel.height - naturalHeight) / 2)))
       radius: Style.cornerRadius
       color: Commons.Color.popups.background
       borderSpec: Border.surfaceSpec("popups", "border", Commons.Color.popups.border, Math.max(1, Style.space(2)))

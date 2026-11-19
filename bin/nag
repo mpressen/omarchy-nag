@@ -30,7 +30,7 @@ readonly DEMO_FILE="$STATE_DIR/demo"
 # everything that comes out of it is capped at the producer rather than trusted
 # to be reasonable.
 readonly MAX_ALARMS=64
-readonly MAX_MESSAGE=200
+readonly MAX_MESSAGE=80
 readonly MAX_SPEC=200
 readonly MAX_SNOOZE_MINUTES=1440
 readonly MAX_RING_MINUTES=60
@@ -215,9 +215,10 @@ format_remaining() {
 #
 # A repeating alarm reads as its rule instead ("Standup every Friday at
 # 15:00"), with a short repeatLabel for the list row. `spec` is the alarm as
-# text the field takes back, for editing it.
+# text the field takes back, for editing it. `relative` says it was set as a
+# duration, "5m tea", so the row leads with the countdown rather than the time.
 alarm_json() {
-  local id=$1 at=$2 message=$3 repeat=${4:-null} now day label phrase spec
+  local id=$1 at=$2 message=$3 repeat=${4:-null} relative=${5:-false} now day label phrase spec
   now=$(date +%s)
   day=$(date -d "@$at" +%F)
   if [[ $day == "$(date +%F)" ]]; then
@@ -235,7 +236,7 @@ alarm_json() {
     --arg spec "$(date -d "@$at" "+$spec")" \
     --arg remaining "$(format_remaining $((at - now)))" \
     --argjson remainingSeconds $((at - now)) \
-    --argjson repeat "$repeat" '
+    --argjson repeat "$repeat" --argjson relative "$relative" '
     def short: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
     def long: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
     # [phrase, list label, the words the field takes back]
@@ -250,7 +251,7 @@ alarm_json() {
     def text: map(select(. != "")) | join(" ");
     {id: $id, at: $at, message: $message, atLabel: $atLabel, atPhrase: $atPhrase,
      remaining: $remaining, remainingSeconds: $remainingSeconds, ringing: false,
-     repeat: null, repeatLabel: null, spec: ([$spec, $message] | text)}
+     repeat: null, repeatLabel: null, relative: $relative, spec: ([$spec, $message] | text)}
     + if $repeat then ($repeat | words) as $w |
         {repeat: $repeat, repeatLabel: $w[1], atPhrase: ($w[0] + " at " + $repeat.time),
          spec: (["every", $w[2], $repeat.time, $message] | text)}
@@ -498,17 +499,19 @@ next_occurrence() {
 # "tomorrow 9:00 dentist" and "next wednesday 18:15 hockey" work without the
 # message having to be quoted. A repeat is tried first.
 #
-# Sets PARSED_AT, PARSED_MESSAGE and PARSED_REPEAT ("null" for a one-shot).
+# Sets PARSED_AT, PARSED_MESSAGE, PARSED_REPEAT ("null" for a one-shot) and
+# PARSED_RELATIVE ("true" when the time was a duration).
 parse_input() {
   local -a words
   read -r -a words <<<"$(clean_text "$*" "$MAX_SPEC")"
-  PARSED_REPEAT=null
+  PARSED_REPEAT=null PARSED_RELATIVE=false
   ((${#words[@]})) && parse_repeat "${words[@]}" && return 0
   PARSED_REPEAT=null
   local count=${#words[@]} n at
   for ((n = count < 4 ? count : 4; n >= 1; n--)); do
     if at=$(resolve_spec "${words[*]:0:n}"); then
       PARSED_AT=$at
+      parse_duration "${words[*]:0:n}" >/dev/null && PARSED_RELATIVE=true
       PARSED_MESSAGE=$(clean_text "${words[*]:n}" "$MAX_MESSAGE")
       return 0
     fi
@@ -522,11 +525,13 @@ parse_input() {
 
 # Write an alarm to disk and arm its systemd timer, or fail and leave nothing.
 schedule() {
-  local id=$1 at=$2 message=$3 repeat=${4:-null}
+  local id=$1 at=$2 message=$3 repeat=${4:-null} relative=${5:-false}
   write_state "$ALARM_DIR/$id.json" "$(jq -cn --arg id "$id" --argjson at "$at" \
     --arg message "$message" --argjson repeat "$repeat" --argjson created "$(date +%s)" \
+    --argjson relative "$relative" \
     '{id: $id, at: $at, message: $message, created: $created}
-     + if $repeat then {repeat: $repeat} else {} end')" || return 1
+     + if $repeat then {repeat: $repeat} else {} end
+     + if $relative then {relative: true} else {} end')" || return 1
   arm_timer "$id" "$at" || { rm -f -- "$ALARM_DIR/$id.json"; return 1; }
 }
 
@@ -536,15 +541,16 @@ schedule_next() {
   at=$(next_occurrence "$repeat" "$after") && schedule "$(new_id)" "$at" "$message" "$repeat"
 }
 
-# Sets ALARM_ID, ALARM_AT, ALARM_MESSAGE and ALARM_REPEAT from an alarm or
+# Sets ALARM_ID, ALARM_AT, ALARM_MESSAGE, ALARM_REPEAT and ALARM_RELATIVE from an alarm or
 # ringing file, or fails on one that is not a bounded, well-shaped document.
 # The fields are split on the unit separator, which clean_text never lets
 # into a message.
 load_alarm() {
   local fields
   fields=$(read_state "$1" | jq -er 'select(type == "object")
-    | [.id, .at, .message // "", (.repeat // null | tojson)] | map(tostring) | join([31] | implode)' 2>/dev/null) || return 1
-  IFS=$'\x1f' read -r ALARM_ID ALARM_AT ALARM_MESSAGE ALARM_REPEAT <<<"$fields"
+    | [.id, .at, .message // "", (.repeat // null | tojson), .relative == true]
+    | map(tostring) | join([31] | implode)' 2>/dev/null) || return 1
+  IFS=$'\x1f' read -r ALARM_ID ALARM_AT ALARM_MESSAGE ALARM_REPEAT ALARM_RELATIVE <<<"$fields"
   valid_id "$ALARM_ID" && [[ $ALARM_AT =~ ^[0-9]+$ ]]
 }
 
@@ -566,7 +572,7 @@ unit_exists() {
 # missing: a reboot clears transient units but not the files, so this is what
 # makes an alarm for tomorrow morning real.
 pending_alarms() {
-  local now file ALARM_ID ALARM_AT ALARM_MESSAGE ALARM_REPEAT
+  local now file ALARM_ID ALARM_AT ALARM_MESSAGE ALARM_REPEAT ALARM_RELATIVE
   now=$(date +%s)
   for file in "$ALARM_DIR"/*.json; do
     # A file we cannot read as one bounded, regular, well-shaped document is
@@ -582,7 +588,7 @@ pending_alarms() {
     fi
 
     unit_exists "$ALARM_ID" || arm_timer "$ALARM_ID" "$ALARM_AT"
-    alarm_json "$ALARM_ID" "$ALARM_AT" "$ALARM_MESSAGE" "$ALARM_REPEAT"
+    alarm_json "$ALARM_ID" "$ALARM_AT" "$ALARM_MESSAGE" "$ALARM_REPEAT" "$ALARM_RELATIVE"
   done
 }
 
@@ -646,7 +652,12 @@ notify_ringing() {
   RING_NID=""
   if RING_NID=$(omarchy-notification-send -p -u critical -g "$(glyph)" "$(headline "$message")" "$when" \
     "${answer[@]}" 2>/dev/null); then
-    if [[ $RING_NID =~ ^[0-9]+$ ]]; then watch_close "$id" "$RING_NID" & else RING_NID=""; fi
+    if [[ $RING_NID =~ ^[0-9]+$ ]]; then
+      watch_close "$id" "$RING_NID" &
+      RING_WATCHER=$!
+    else
+      RING_NID=""
+    fi
   else
     RING_NID=""
     # Shells older than Omarchy 4.5 have no --action and get the click-to-open
@@ -718,18 +729,18 @@ ring() {
 # ---------------------------------------------------------------------------
 
 cmd_parse() {
-  local PARSED_AT PARSED_MESSAGE PARSED_REPEAT
+  local PARSED_AT PARSED_MESSAGE PARSED_REPEAT PARSED_RELATIVE
   parse_input "$@" || die "not a time"
-  ok_alarm "" "$PARSED_AT" "$PARSED_MESSAGE" "$PARSED_REPEAT"
+  ok_alarm "" "$PARSED_AT" "$PARSED_MESSAGE" "$PARSED_REPEAT" "$PARSED_RELATIVE"
 }
 
 # Schedule what parse_input left in PARSED_*, and answer with it.
 schedule_parsed() {
   local id
   id=$(new_id)
-  schedule "$id" "$PARSED_AT" "$PARSED_MESSAGE" "$PARSED_REPEAT" || die "could not set the timer"
+  schedule "$id" "$PARSED_AT" "$PARSED_MESSAGE" "$PARSED_REPEAT" "$PARSED_RELATIVE" || die "could not set the timer"
   refresh_panel
-  ok_alarm "$id" "$PARSED_AT" "$PARSED_MESSAGE" "$PARSED_REPEAT"
+  ok_alarm "$id" "$PARSED_AT" "$PARSED_MESSAGE" "$PARSED_REPEAT" "$PARSED_RELATIVE"
 }
 
 cmd_set() {
@@ -737,7 +748,7 @@ cmd_set() {
   local alarms=("$ALARM_DIR"/*.json)
   ((${#alarms[@]} < MAX_ALARMS)) || die "too many alarms"
 
-  local PARSED_AT PARSED_MESSAGE PARSED_REPEAT
+  local PARSED_AT PARSED_MESSAGE PARSED_REPEAT PARSED_RELATIVE
   parse_input "$@" || die "not a time"
   schedule_parsed
 }
@@ -750,7 +761,7 @@ cmd_edit() {
   shift || true
   valid_id "$id" && [[ -f $ALARM_DIR/$id.json || -f $RING_DIR/$id.json ]] || die "unknown alarm"
 
-  local PARSED_AT PARSED_MESSAGE PARSED_REPEAT
+  local PARSED_AT PARSED_MESSAGE PARSED_REPEAT PARSED_RELATIVE
   parse_input "$@" || die "not a time"
   cancel_alarm "$id"
   schedule_parsed
@@ -794,11 +805,11 @@ cmd_snooze() {
   valid_id "$id" || die "unknown alarm"
   int_in "$minutes" 1 "$MAX_SNOOZE_MINUTES" || die "bad snooze"
 
-  local ALARM_ID ALARM_AT ALARM_MESSAGE ALARM_REPEAT
+  local ALARM_ID ALARM_AT ALARM_MESSAGE ALARM_REPEAT ALARM_RELATIVE
   load_alarm "$RING_DIR/$id.json" || load_alarm "$ALARM_DIR/$id.json" || die "unknown alarm"
   cancel_alarm "$id"
 
-  local PARSED_AT=$(($(date +%s) + 10#$minutes * 60)) PARSED_MESSAGE=$ALARM_MESSAGE PARSED_REPEAT=null
+  local PARSED_AT=$(($(date +%s) + 10#$minutes * 60)) PARSED_MESSAGE=$ALARM_MESSAGE PARSED_REPEAT=null PARSED_RELATIVE=true
   schedule_parsed
 }
 
@@ -808,11 +819,11 @@ cmd_skip() {
   local id=${1:-}
   valid_id "$id" || die "unknown alarm"
 
-  local ALARM_ID ALARM_AT ALARM_MESSAGE ALARM_REPEAT
+  local ALARM_ID ALARM_AT ALARM_MESSAGE ALARM_REPEAT ALARM_RELATIVE
   load_alarm "$ALARM_DIR/$id.json" || die "unknown alarm"
   [[ $ALARM_REPEAT != null ]] || die "not a repeating alarm"
 
-  local PARSED_AT PARSED_MESSAGE=$ALARM_MESSAGE PARSED_REPEAT=$ALARM_REPEAT
+  local PARSED_AT PARSED_MESSAGE=$ALARM_MESSAGE PARSED_REPEAT=$ALARM_REPEAT PARSED_RELATIVE=false
   PARSED_AT=$(next_occurrence "$ALARM_REPEAT" "$ALARM_AT") || die "no next occurrence"
   cancel_alarm "$id"
   schedule_parsed
@@ -873,7 +884,7 @@ cmd_ask() {
 cmd_fire() {
   ensure_dirs
   demo_on && exit 0
-  local id=${1:-} when ALARM_ID ALARM_AT ALARM_MESSAGE ALARM_REPEAT
+  local id=${1:-} when ALARM_ID ALARM_AT ALARM_MESSAGE ALARM_REPEAT ALARM_RELATIVE
   valid_id "$id" || exit 0
   load_alarm "$ALARM_DIR/$id.json" || exit 0
   when=$(date -d "@$ALARM_AT" '+%H:%M')
@@ -889,7 +900,7 @@ cmd_fire() {
     schedule_next "$ALARM_REPEAT" "$ALARM_AT" "$ALARM_MESSAGE" || true
   fi
 
-  local RING_NID
+  local RING_NID RING_WATCHER=""
   notify_ringing "$id" "$ALARM_MESSAGE" "$when"
   refresh_panel
   ring "$id" &
@@ -907,8 +918,14 @@ cmd_fire() {
     fi
     sleep 1
   done
-  pkill -P "$sound" 2>/dev/null || true
-  kill "$sound" 2>/dev/null || true
+  # The sound and the close watcher go with it: a watcher left behind would
+  # hold a bus monitor open until the card is closed, which a missed alarm's
+  # card may never be.
+  local job
+  for job in "$sound" $RING_WATCHER; do
+    pkill -P "$job" 2>/dev/null || true
+    kill "$job" 2>/dev/null || true
+  done
 }
 
 # `demo on` and `demo off`, plus a bare `demo` that says which it is. Turning it

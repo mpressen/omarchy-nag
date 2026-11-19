@@ -848,7 +848,7 @@ Panel {
 
     BorderSurface {
       id: card
-      width: Math.min(Style.space(360), panel.width - Style.gapsOut * 2)
+      width: Math.min(Style.space(420), panel.width - Style.gapsOut * 2)
       height: Math.min(contentTopInset + content.implicitHeight + contentBottomInset,
                        panel.height - y - Style.gapsOut)
       // Centred across, and pinned at a third of the way down rather than
@@ -1102,35 +1102,45 @@ Panel {
                   anchors.verticalCenter: parent.verticalCenter
                   spacing: Style.space(8)
 
+                  // The time the way it was typed, the other way on hover:
+                  // "17:20" asks how long is left, "5m" asks when that is.
                   Text {
+                    readonly property bool countdown: !!modelData.relative && !modelData.ringing
                     anchors.verticalCenter: parent.verticalCenter
                     textFormat: Text.PlainText
-                    text: root.plain(modelData.atLabel)
+                    text: countdown ? root.remainingFor(modelData) : root.plain(modelData.atLabel)
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.body
                     renderType: Text.NativeRendering
                     color: rowColor
+
+                    HoverHandler { id: timeHover }
+                    PanelToolTip {
+                      visible: timeHover.hovered && !modelData.ringing
+                      text: parent.countdown ? root.plain(modelData.atPhrase)
+                        : "in " + root.remainingFor(modelData)
+                      fontFamily: root.fontFamily
+                    }
                   }
 
+                  // A repeat is only an icon on its row, so the message keeps
+                  // the room: when it repeats is for the pointer to ask.
                   Text {
                     anchors.verticalCenter: parent.verticalCenter
+                    visible: !!modelData.repeat
                     textFormat: Text.PlainText
-                    text: root.remainingFor(modelData)
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.caption
-                    renderType: Text.NativeRendering
-                    color: soon ? root.urgent : Qt.darker(root.foreground, 1.6)
-                  }
-
-                  Text {
-                    anchors.verticalCenter: parent.verticalCenter
-                    visible: !!modelData.repeatLabel
-                    textFormat: Text.PlainText
-                    text: root.iconRepeat + " " + root.plain(modelData.repeatLabel)
+                    text: root.iconRepeat
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
                     renderType: Text.NativeRendering
                     color: Qt.darker(root.foreground, 1.6)
+
+                    HoverHandler { id: repeatHover }
+                    PanelToolTip {
+                      visible: repeatHover.hovered
+                      text: "Repeats " + root.plain(modelData.atPhrase || "")
+                      fontFamily: root.fontFamily
+                    }
                   }
 
                   Text {
@@ -1143,6 +1153,14 @@ Panel {
                     font.pixelSize: Style.font.body
                     renderType: Text.NativeRendering
                     color: rowColor
+
+                    // A message cut short reads in full on hover.
+                    HoverHandler { id: messageHover }
+                    PanelToolTip {
+                      visible: messageHover.hovered && parent.truncated
+                      text: parent.text
+                      fontFamily: root.fontFamily
+                    }
                   }
                 }
 

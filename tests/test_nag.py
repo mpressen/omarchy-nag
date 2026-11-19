@@ -36,7 +36,8 @@ STUBS = {
 [[ $1 == get ]] || exit 0
 jq -r --arg k "$3" 'if has($k) then .[$k] else empty end' "$NAG_TEST/settings.json"
 """,
-    # A timer is a marker file; anything else runs now, like a transient service.
+    # A loaded unit is a marker file. A timer only waits; a service runs now,
+    # in the background, and its marker goes when it ends.
     "systemd-run": """
 cmd=(); unit=""; timer=0
 while (($#)); do
@@ -47,11 +48,17 @@ while (($#)); do
   esac
   shift
 done
-if ((timer)); then : >"$NAG_TEST/timers/$unit.timer"; else "${cmd[@]}" >/dev/null 2>&1 & fi
+if ((timer)); then : >"$NAG_TEST/timers/$unit.timer"; exit 0; fi
+if [[ -n $unit ]]; then
+  [[ -e $NAG_TEST/timers/$unit.service ]] && exit 1
+  : >"$NAG_TEST/timers/$unit.service"
+fi
+( "${cmd[@]}"; [[ -z $unit ]] || rm -f "$NAG_TEST/timers/$unit.service" ) >/dev/null 2>&1 &
+echo $! >>"$NAG_TEST/pids"
 """,
     "systemctl": """
 case $2 in
-  list-units) [[ -e $NAG_TEST/timers/${@: -1} ]] && echo "${@: -1} loaded active waiting" ;;
+  list-units) for u in "${@:3}"; do [[ $u != -* && -e $NAG_TEST/timers/$u ]] && echo "$u loaded active"; done ;;
   stop) rm -f "$NAG_TEST/timers/$3" ;;
 esac
 exit 0
@@ -90,7 +97,7 @@ class NagTestCase(unittest.TestCase):
         stubs = os.path.join(self.root, "stubs")
         os.makedirs(stubs)
         os.makedirs(os.path.join(self.root, "timers"))
-        for name in ("calls.log", "dbus"):
+        for name in ("calls.log", "dbus", "pids"):
             open(os.path.join(self.root, name), "w").close()
         for name, body in STUBS.items():
             path = os.path.join(stubs, name)
@@ -148,11 +155,14 @@ class NagTestCase(unittest.TestCase):
         return alarm_id
 
     def stop_rings(self):
-        for proc in self.rings:
+        with open(os.path.join(self.root, "pids")) as f:
+            groups = [int(pid) for pid in f.read().split()]
+        for pid in [proc.pid for proc in self.rings] + groups:
             try:
-                os.killpg(proc.pid, signal.SIGKILL)
+                os.killpg(os.getpgid(pid), signal.SIGKILL)
             except ProcessLookupError:
                 pass
+        for proc in self.rings:
             proc.wait()
 
     def close_notification(self, nid=NID):
@@ -173,7 +183,20 @@ class NagTestCase(unittest.TestCase):
         return wait_for(lambda: self.calls("pw-play"), what="the sound")[0]
 
     def timers(self):
-        return sorted(os.listdir(os.path.join(self.root, "timers")))
+        return sorted(t for t in os.listdir(os.path.join(self.root, "timers")) if t.endswith(".timer"))
+
+    def reboot(self):
+        """Transient units do not survive a reboot; the alarm files do."""
+        for unit in os.listdir(os.path.join(self.root, "timers")):
+            os.remove(os.path.join(self.root, "timers", unit))
+
+    def move_alarm(self, alarm_id, at):
+        """Pretend an alarm's time is somewhere else, as a reboot past it would."""
+        with open(self.alarm_file(alarm_id)) as f:
+            doc = json.load(f)
+        doc["at"] = at
+        with open(self.alarm_file(alarm_id), "w") as f:
+            json.dump(doc, f)
 
     def alarm_file(self, alarm_id):
         return os.path.join(self.root, "state", "nag", "alarms", alarm_id + ".json")
@@ -274,14 +297,21 @@ class AlarmsTest(NagTestCase):
         self.assertEqual([a["id"] for a in self.alarms()], [alarm_id])
         self.assertEqual(self.timers(), [f"nag-{alarm_id}.timer"])
 
-    def test_alarm_whose_time_passed_unfired_is_dropped(self):
+    def test_alarm_missed_while_off_is_reported_not_lost(self):
         alarm_id = self.set("5m tea")["id"]
-        with open(self.alarm_file(alarm_id)) as f:
-            doc = json.load(f)
-        doc["at"] = int(time.time()) - 60
-        with open(self.alarm_file(alarm_id), "w") as f:
-            json.dump(doc, f)
+        self.reboot()
+        self.move_alarm(alarm_id, int(time.time()) - 3600)
         self.assertEqual(self.alarms(), [])
+        [notification] = self.notifications()
+        self.assertIn("Missed: tea", notification)
+
+    def test_alarm_just_missed_while_off_still_rings(self):
+        alarm_id = self.set("5m tea")["id"]
+        self.reboot()
+        self.move_alarm(alarm_id, int(time.time()) - 60)
+        self.alarms()
+        wait_for(lambda: any(a["ringing"] for a in self.alarms()), what="the late ring")
+        self.assertNotIn("Missed: tea", sum(self.notifications(), []))
 
     def test_corrupt_or_planted_files_are_dropped(self):
         self.set("5m tea")
@@ -404,6 +434,131 @@ class RingingTest(NagTestCase):
         [notification] = self.notifications()
         headline = notification[notification.index("-g") + 2]
         self.assertEqual(headline, "u call")
+
+
+class RingLimitTest(NagTestCase):
+    def test_unanswered_alarm_becomes_missed(self):
+        self.settings(sound=self.sound, ringMinutes=1)
+        self.ring("5m tea")
+        missed = wait_for(lambda: [n for n in self.notifications() if "Missed: tea" in n],
+                          timeout=15, what="the ring to time out")[0]
+        self.assertEqual(self.alarms(), [])
+        self.assertEqual(missed[missed.index("-r") + 1], NID)
+        self.rings[0].wait(timeout=5)
+
+
+def next_at(weekdays, hour, minute=0, after=None):
+    after = after or time.time()
+    for i in range(8):
+        day = date.fromtimestamp(after) + timedelta(days=i)
+        at = epoch(day, hour, minute)
+        if at > after and day.isoweekday() in weekdays:
+            return at
+
+
+class RecurrenceTest(NagTestCase):
+    def parse(self, text):
+        result = self.nag("parse", text)
+        self.assertTrue(result["ok"], (text, result))
+        return result
+
+    def test_phrasings(self):
+        cases = {
+            "every friday 15:00 standup": ([5], 15, "standup", "every Friday at 15:00"),
+            "every Friday at 15 standup": ([5], 15, "standup", "every Friday at 15:00"),
+            "every weekday 5pm leave": ([1, 2, 3, 4, 5], 17, "leave", "every weekday at 17:00"),
+            "every workday at 9:30am": ([1, 2, 3, 4, 5], 9, "", "every weekday at 09:30"),
+            "daily 9:00 water": ([1, 2, 3, 4, 5, 6, 7], 9, "water", "every day at 09:00"),
+            "every day 9 water": ([1, 2, 3, 4, 5, 6, 7], 9, "water", "every day at 09:00"),
+            "weekends 10:00 brunch": ([6, 7], 10, "brunch", "every weekend at 10:00"),
+            "every mon, wed and fri 7:30 run": ([1, 3, 5], 7, "run", "every Mon, Wed and Fri at 07:30"),
+            "every mon-fri 8am": ([1, 2, 3, 4, 5], 8, "", "every weekday at 08:00"),
+            "17:00 every weekday leave": ([1, 2, 3, 4, 5], 17, "leave", "every weekday at 17:00"),
+        }
+        for text, (days, hour, message, phrase) in cases.items():
+            result = self.parse(text)
+            minute = 30 if ":30" in text else 0
+            self.assertEqual(result["repeat"]["days"], days, text)
+            self.assertEqual(result["at"], next_at(days, hour, minute), text)
+            self.assertEqual((result["message"], result["atPhrase"]), (message, phrase), text)
+
+    def test_a_repeat_needs_a_time(self):
+        for text in ("every friday standup", "every 5m", "every"):
+            self.assertFalse(self.nag("parse", text)["ok"], text)
+
+    def test_every_in_the_message_is_just_words(self):
+        result = self.parse("5m ask about every friday")
+        self.assertIsNone(result["repeat"])
+        self.assertEqual(result["message"], "ask about every friday")
+
+    def test_a_day_without_every_is_once(self):
+        self.assertIsNone(self.parse("fri 15:00 standup")["repeat"])
+
+    def test_listed_with_its_rule_and_editable_text(self):
+        self.set("every fri 15:00 standup")
+        [alarm] = self.alarms()
+        self.assertEqual((alarm["repeatLabel"], alarm["spec"]), ("Fri", "every fri 15:00 standup"))
+        self.assertEqual(self.parse(alarm["spec"])["at"], alarm["at"])
+
+    def test_firing_sets_the_next_occurrence(self):
+        alarm_id = self.ring("every weekday 9:00 standup")
+        first = json.load(open(os.path.join(self.root, "state", "nag", "ringing", alarm_id + ".json")))["at"]
+        alarms = self.alarms()
+        self.assertEqual([a["ringing"] for a in alarms], [True, False])
+        self.assertEqual(alarms[1]["at"], next_at([1, 2, 3, 4, 5], 9, after=first))
+        self.assertEqual(alarms[1]["repeatLabel"], "weekdays")
+
+    def test_snooze_and_dismiss_leave_the_series(self):
+        alarm_id = self.ring("every day 9:00 water")
+        snoozed = self.nag("snooze", alarm_id)
+        self.assertIsNone(snoozed["repeat"])
+        self.assertEqual(sorted(bool(a["repeat"]) for a in self.alarms()), [False, True])
+        self.nag("dismiss", snoozed["id"])
+        [series] = self.alarms()
+        self.assertEqual(series["repeatLabel"], "daily")
+
+    def test_skip_moves_to_the_occurrence_after(self):
+        alarm = self.set("every mon, thu 7:30 gym")
+        skipped = self.nag("skip", alarm["id"])
+        self.assertEqual(skipped["at"], next_at([1, 4], 7, 30, after=alarm["at"]))
+        self.assertEqual([a["id"] for a in self.alarms()], [skipped["id"]])
+        self.assertEqual(self.timers(), [f"nag-{skipped['id']}.timer"])
+
+    def test_skip_refuses_a_one_shot(self):
+        self.assertFalse(self.nag("skip", self.set("5m tea")["id"])["ok"])
+
+    def test_cancel_removes_the_series(self):
+        self.nag("cancel", self.set("every day 9:00 water")["id"])
+        self.assertEqual(self.alarms(), [])
+
+    def test_missed_occurrence_reports_and_moves_on(self):
+        alarm_id = self.set("every day 9:00 water")["id"]
+        self.reboot()
+        self.move_alarm(alarm_id, int(time.time()) - 3 * 86400)
+        [alarm] = self.alarms()
+        self.assertEqual(alarm["at"], next_at(range(1, 8), 9))
+        self.assertEqual(len([n for n in self.notifications() if "Missed: water" in n]), 1)
+
+
+class EditTest(NagTestCase):
+    def test_edit_replaces_the_alarm(self):
+        alarm_id = self.set("5m tea")["id"]
+        edited = self.nag("edit", alarm_id, "every fri 15:00 tea")
+        [alarm] = self.alarms()
+        self.assertEqual((alarm["id"], alarm["repeatLabel"]), (edited["id"], "Fri"))
+        self.assertEqual(self.timers(), [f"nag-{edited['id']}.timer"])
+
+    def test_edit_that_does_not_parse_keeps_the_alarm(self):
+        alarm_id = self.set("5m tea")["id"]
+        self.assertFalse(self.nag("edit", alarm_id, "soon tea")["ok"])
+        self.assertEqual([a["id"] for a in self.alarms()], [alarm_id])
+
+    def test_edit_a_ringing_alarm_reschedules_it(self):
+        alarm_id = self.ring("5m tea")
+        self.nag("edit", alarm_id, "10m tea")
+        [alarm] = self.alarms()
+        self.assertFalse(alarm["ringing"])
+        self.assertIn(alarm["remaining"], ("10m", "9m"))
 
 
 class DemoTest(NagTestCase):

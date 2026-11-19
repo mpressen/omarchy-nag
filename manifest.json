@@ -22,8 +22,18 @@
         "key": "hideWhenIdle",
         "type": "boolean",
         "label": "Hide when idle",
-        "description": "With no alarm set, show the widget only while the pointer is on the bar, like Omarchy's indicators.",
+        "description": "With no alarm coming up, show the widget only while the pointer is on the bar, like Omarchy's indicators.",
         "defaultValue": false
+      },
+      {
+        "key": "countdownMinutes",
+        "type": "integer",
+        "label": "Countdown",
+        "description": "Minutes before the next alarm the countdown shows in the bar from; 0 shows it as soon as one is set.",
+        "min": 0,
+        "max": 1440,
+        "step": 1,
+        "defaultValue": 60
       },
       {
         "key": "icon",
@@ -31,6 +41,16 @@
         "label": "Icon",
         "description": "A glyph for the bar and the notifications, such as Omarchy's reminder bell 󰢌. Empty keeps the timer.",
         "defaultValue": ""
+      },
+      {
+        "key": "ringMinutes",
+        "type": "integer",
+        "label": "Ring for",
+        "description": "Minutes an alarm rings before it is reported missed.",
+        "min": 1,
+        "max": 60,
+        "step": 1,
+        "defaultValue": 5
       },
       {
         "key": "soundOn",

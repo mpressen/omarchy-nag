@@ -856,15 +856,17 @@ Panel {
 
     BorderSurface {
       id: card
-      readonly property real naturalHeight: contentTopInset + content.implicitHeight + contentBottomInset
+      // The card as tall as the settings make it, whichever view is showing.
+      readonly property real settingsHeight: contentTopInset + cardHeader.height + content.spacing
+        + settingsColumn.implicitHeight + contentBottomInset
       width: Math.min(Style.space(420), panel.width - Style.gapsOut * 2)
-      height: Math.min(naturalHeight, panel.height - y - Style.gapsOut)
-      // Centred across, and pinned at a third of the way down rather than
-      // centred: the card grows as alarms are added, and a card centred on its
-      // own height would move up by half a row each time. A card too tall for
-      // that, the settings, is centred instead of running off the bottom.
+      height: Math.min(contentTopInset + content.implicitHeight + contentBottomInset,
+                       panel.height - y - Style.gapsOut)
+      // Centred across. Down, its top stays where the settings, the tallest
+      // view, are centred, in every view: the card grows downwards as alarms
+      // are added and never moves when the view changes.
       x: Math.round((panel.width - width) / 2)
-      y: Math.round(Math.max(Style.gapsOut, Math.min(panel.height * 0.3, (panel.height - naturalHeight) / 2)))
+      y: Math.round(Math.max(Style.gapsOut, (panel.height - settingsHeight) / 2))
       radius: Style.cornerRadius
       color: Commons.Color.popups.background
       borderSpec: Border.surfaceSpec("popups", "border", Commons.Color.popups.border, Math.max(1, Style.space(2)))
@@ -909,6 +911,7 @@ Panel {
         // The title on the left, with a way back while in the settings; the
         // gear on the right, where a settings button usually sits.
         Item {
+          id: cardHeader
           width: parent.width
           height: gear.height
 
@@ -1261,6 +1264,7 @@ Panel {
         // One card per setting, each written as soon as it changes: there is no
         // Save, the way there is none anywhere else in the shell.
         Column {
+          id: settingsColumn
           width: parent.width
           visible: root.view === "settings"
           spacing: Style.space(14)

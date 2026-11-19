@@ -265,6 +265,18 @@ class ParsingTest(NagTestCase):
         relative = {a["message"]: a["relative"] for a in self.alarms()}
         self.assertEqual(relative, {"tea": True, "dentist": False, "water": False})
 
+    def test_duration_alarm_is_edited_as_a_duration(self):
+        for typed in ("5m tea", "2h 30m tea", "1d 2h 5m tea"):
+            self.set(typed)
+            [alarm] = [a for a in self.alarms() if a["spec"] == typed]
+            self.assertEqual(self.parse(alarm["spec"])["message"], "tea")
+        self.set("40s soon")
+        [soon] = [a for a in self.alarms() if a["message"] == "soon"]
+        self.assertRegex(soon["spec"], r"^\d+s soon$")
+        self.set("tomorrow 9:00 dentist")
+        [dentist] = [a for a in self.alarms() if a["message"] == "dentist"]
+        self.assertEqual(dentist["spec"], "tomorrow 09:00 dentist")
+
     def test_long_message_is_capped_to_fit_a_row(self):
         alarm = self.set("5m " + "a" * 150)
         self.assertEqual(alarm["message"], "a" * 80)

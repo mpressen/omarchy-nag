@@ -604,9 +604,32 @@ class RecurrenceTest(NagTestCase):
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.rings.append(proc)
         wait_for(lambda: [a["id"] for a in self.alarms() if a["ringing"]] == [following["id"]], what="the takeover")
-        wait_for(lambda: any(c[0] == "call" and "CloseNotification" in " ".join(c) for c in self.calls("gdbus")),
-                 what="the old card closed")
+        # One card for the whole repeat: the new occurrence rewrites the old
+        # one's in place, which is left open for it.
+        wait_for(lambda: len(self.notifications()) == 2, what="the second card")
+        [old, new] = self.notifications()
+        self.assertNotIn("-r", old)
+        self.assertEqual(new[new.index("-r") + 1], self.env["NAG_NID"])
+        self.assertFalse([c for c in self.calls("gdbus") if "CloseNotification" in " ".join(c)])
         self.assertFalse([n for n in self.notifications() if "Missed" in " ".join(n)])
+
+    def test_a_missed_interval_card_is_rewritten_by_the_next(self):
+        self.settings(sound=self.sound, ringMinutes=1)
+        first = self.ring("every 5m water")
+        wait_for(lambda: [n for n in self.notifications() if "Missed: water" in n],
+                 timeout=15, what="the ring to time out")
+        [following] = [a for a in self.alarms() if a["id"] != first]
+        self.rings.append(subprocess.Popen(
+            [NAG, "fire", following["id"]], env=self.env, start_new_session=True,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+        wait_for(lambda: len(self.notifications()) == 3, what="the next card")
+        new = self.notifications()[-1]
+        self.assertEqual(new[new.index("-r") + 1], NID)
+
+    def test_a_one_shot_never_rewrites_a_card(self):
+        self.ring("5m tea")
+        [card] = self.notifications()
+        self.assertNotIn("-r", card)
 
     def test_every_few_days(self):
         alarm = self.set("every 2 days 9:00 plants")

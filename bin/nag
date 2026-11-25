@@ -24,6 +24,7 @@ shopt -s nullglob
 readonly STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/nag"
 readonly ALARM_DIR="$STATE_DIR/alarms"
 readonly RING_DIR="$STATE_DIR/ringing"
+readonly CARD_DIR="$STATE_DIR/cards"
 readonly DEMO_FILE="$STATE_DIR/demo"
 
 # Bounds. The panel is one text field on a shared, long-lived shell process, so
@@ -119,11 +120,13 @@ clean_leaf_dir() {
 
 ensure_dirs() {
   # The parent is only checked and re-moded, never swept: its entries are the
-  # two directories below it.
+  # three directories below it.
   local dir
-  for dir in "$STATE_DIR" "$ALARM_DIR" "$RING_DIR"; do harden_dir "$dir" || exit 1; done
+  for dir in "$STATE_DIR" "$ALARM_DIR" "$RING_DIR" "$CARD_DIR"; do harden_dir "$dir" || exit 1; done
   clean_leaf_dir "$ALARM_DIR"
   clean_leaf_dir "$RING_DIR"
+  clean_leaf_dir "$CARD_DIR"
+  find "$CARD_DIR" -mindepth 1 -maxdepth 1 -type f -mmin +1500 -delete 2>/dev/null || true
 }
 
 # Read a state file through one descriptor that refuses to follow a symlink and
@@ -901,7 +904,8 @@ cancel_alarm() {
 # body are rendered by components this plugin does not own, and the summary is
 # whatever somebody typed into the field, so it goes through headline().
 notify_ringing() {
-  local id=$1 message=$2 when=$3
+  local id=$1 message=$2 when=$3 replace=()
+  [[ -n ${4:-} ]] && replace=(-r "$4")
   # The buttons answer the alarm without opening the panel; clicking the card
   # runs the first, so it snoozes. Their words are constants and the id goes
   # after --with, so the message never reaches a command. With snooze off,
@@ -915,7 +919,7 @@ notify_ringing() {
   fi
 
   RING_NID=""
-  if RING_NID=$(omarchy-notification-send -p -u critical -g "$(glyph)" "$(headline "$message")" "$when" \
+  if RING_NID=$(omarchy-notification-send "${replace[@]}" -p -u critical -g "$(glyph)" "$(headline "$message")" "$when" \
     "${answer[@]}" 2>/dev/null); then
     if [[ $RING_NID =~ ^[0-9]+$ ]]; then
       watch_close "$id" "$RING_NID" &
@@ -1180,7 +1184,12 @@ cmd_fire() {
 
   # An occurrence of a repeat takes over from the one before it if that one is
   # still ringing: "every 30s" would otherwise pile up cards and sounds.
-  [[ $ALARM_REPEAT == null ]] || supersede "$ALARM_REPEAT" "$ALARM_MESSAGE"
+  local card="" last_card=""
+  if [[ $ALARM_REPEAT != null ]]; then
+    supersede "$ALARM_REPEAT" "$ALARM_MESSAGE"
+    card=$(card_file "$ALARM_REPEAT" "$ALARM_MESSAGE")
+    last_card=$(last_card "$card" "$ALARM_REPEAT")
+  fi
 
   write_state "$RING_DIR/$id.json" "$(jq -cn --arg id "$id" --argjson at "$ALARM_AT" \
     --arg message "$ALARM_MESSAGE" --arg atLabel "$when" --argjson series "$ALARM_REPEAT" \
@@ -1197,20 +1206,22 @@ cmd_fire() {
   fi
 
   local RING_NID RING_WATCHER=""
-  notify_ringing "$id" "$ALARM_MESSAGE" "$when"
+  notify_ringing "$id" "$ALARM_MESSAGE" "$when" "$last_card"
+  if [[ -n $card ]]; then
+    if [[ -n $RING_NID ]]; then write_state "$card" "$RING_NID" || true; else rm -f -- "$card"; fi
+  fi
   refresh_panel
   ring "$id" &
   local sound=$!
 
   # A second at a time, counted rather than clocked, until it is answered or
   # its time is up.
-  local ticks=$(($(ring_minutes) * 60)) missed=false
+  local ticks=$(($(ring_minutes) * 60))
   while [[ -f $RING_DIR/$id.json ]]; do
     if ((ticks-- <= 0)); then
       rm -f -- "$RING_DIR/$id.json"
       notify_missed "$ALARM_MESSAGE" "$ALARM_AT" "$RING_NID"
       refresh_panel
-      missed=true
       break
     fi
     sleep 1
@@ -1223,14 +1234,30 @@ cmd_fire() {
     pkill -P "$job" 2>/dev/null || true
     kill "$job" 2>/dev/null || true
   done
-  # Snooze and dismiss stop this unit before it gets here, so an alarm that
-  # stopped ringing without going missed was taken over by the next occurrence
-  # of its repeat: its card goes, the new one says the same.
-  if [[ $missed == false && -n $RING_NID ]]; then
-    timeout 2 gdbus call --session --dest org.freedesktop.Notifications \
-      --object-path /org/freedesktop/Notifications \
-      --method org.freedesktop.Notifications.CloseNotification "$RING_NID" >/dev/null 2>&1 || true
-  fi
+  # An alarm taken over by the next occurrence of its repeat leaves its card
+  # alone: the new occurrence has already rewritten that card in place.
+  # Closing it would only strand it, since the shell keeps a closed card on
+  # screen with nothing left to update it.
+}
+
+# Where the card of a repeat's latest occurrence is kept, by repeat and message.
+card_file() {
+  printf '%s\n%s' "$1" "$2" | sha256sum | cut -c1-32 | sed "s|^|$CARD_DIR/|"
+}
+
+# The card the occurrence before this one left, ringing or missed, for the new
+# one to rewrite in place: one card per repeat, not one per occurrence. Only
+# an interval's, and only one recent enough to be that occurrence's: an old id
+# may since have gone to another notification.
+last_card() {
+  local file=$1 every nid age
+  every=$(jq -r '.interval // empty' <<<"$2" 2>/dev/null) || return 0
+  [[ $every =~ ^[0-9]+$ ]] || return 0
+  nid=$(read_state "$file" 2>/dev/null) || return 0
+  [[ $nid =~ ^[0-9]+$ ]] || return 0
+  age=$(($(date +%s) - $(stat -c %Y -- "$file" 2>/dev/null || echo 0)))
+  ((age >= 0 && age <= every + $(ring_minutes) * 60 + 60)) || return 0
+  printf '%s\n' "$nid"
 }
 
 # Stop the ringing occurrence of the repeat in $1 with the message in $2, if

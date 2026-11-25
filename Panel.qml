@@ -1129,8 +1129,11 @@ Panel {
                     HoverHandler { id: timeHover }
                     PanelToolTip {
                       visible: timeHover.hovered && !modelData.ringing
-                      text: parent.countdown ? root.plain(modelData.atPhrase)
-                        : "in " + root.remainingFor(modelData)
+                      // A repeat's phrase is its rule, which the repeat
+                      // icon already gives, so a countdown on one says when.
+                      text: !parent.countdown ? "in " + root.remainingFor(modelData)
+                        : modelData.repeat ? "at " + root.plain(modelData.atLabel)
+                        : root.plain(modelData.atPhrase)
                       fontFamily: root.fontFamily
                     }
                   }

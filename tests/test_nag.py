@@ -73,7 +73,7 @@ exit 0
 """,
     "omarchy-menu-input": 'printf "%s" "$NAG_MENU_INPUT"\n',
     # The notification server's signals are whatever the test writes to a file.
-    "gdbus": 'exec tail -n +1 -F "$NAG_TEST/dbus" 2>/dev/null\n',
+    "gdbus": '[[ $1 == monitor ]] && exec tail -n +1 -F "$NAG_TEST/dbus" 2>/dev/null\nexit 0\n',
     "pw-play": "/usr/bin/sleep 0.05\n",
     # Real waits would make the suite crawl; the log keeps the asked length.
     "sleep": "/usr/bin/sleep 0.05\n",
@@ -547,8 +547,60 @@ class RecurrenceTest(NagTestCase):
         self.assertEqual(back["at"], seen[-2])
 
     def test_a_repeat_needs_a_time(self):
-        for text in ("every friday standup", "every 5m", "every"):
+        for text in ("every friday standup", "every 2 days plants", "every"):
             self.assertFalse(self.nag("parse", text)["ok"], text)
+
+    def test_interval_phrasings(self):
+        cases = {
+            "every 5m water": (300, "water", "every 5 minutes", "every 5m water"),
+            "every 30s": (30, "", "every 30 seconds", "every 30s"),
+            "every 1 min stretch": (60, "stretch", "every minute", "every 1m stretch"),
+            "every 1h30 walk": (5400, "walk", "every 90 minutes", "every 1h30m walk"),
+            "every 5 water": (300, "water", "every 5 minutes", "every 5m water"),
+        }
+        for text, (seconds, message, phrase, spec) in cases.items():
+            before = int(time.time())
+            result = self.parse(text)
+            self.assertEqual(result["repeat"]["interval"], seconds, text)
+            self.assertLessEqual(abs(result["at"] - before - seconds), 2, text)
+            self.assertEqual((result["message"], result["atPhrase"], result["spec"]), (message, phrase, spec), text)
+            self.assertTrue(result["relative"], text)
+        # Too short, a clock time it cannot keep, or not whole days.
+        for text in ("every 5s", "every 5m 9:00 water", "every 5m at 9 water", "every 1d12h 9:00"):
+            self.assertFalse(self.nag("parse", text)["ok"], text)
+
+    def test_interval_fires_and_takes_over_the_ringing_one(self):
+        first = self.ring("every 5m water")
+        [ringing, following] = self.alarms()
+        self.assertEqual(ringing["id"], first)
+        with open(os.path.join(self.root, "state", "nag", "ringing", first + ".json")) as f:
+            ring_at = json.load(f)["at"]
+        self.assertEqual(following["at"] - ring_at, 300)
+        self.assertEqual(following["repeatLabel"], "5m")
+        # The next occurrence fires while the first still rings.
+        proc = subprocess.Popen([NAG, "fire", following["id"]], env=self.env, start_new_session=True,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.rings.append(proc)
+        wait_for(lambda: [a["id"] for a in self.alarms() if a["ringing"]] == [following["id"]], what="the takeover")
+        wait_for(lambda: any(c[0] == "call" and "CloseNotification" in " ".join(c) for c in self.calls("gdbus")),
+                 what="the old card closed")
+        self.assertFalse([n for n in self.notifications() if "Missed" in " ".join(n)])
+
+    def test_every_few_days(self):
+        alarm = self.set("every 2 days 9:00 plants")
+        self.assertEqual(alarm["atPhrase"], "every 2 days at 09:00")
+        start = datetime.fromtimestamp(alarm["at"])
+        self.assertEqual((start.hour, start.minute), (9, 0))
+        self.assertIn((start.date() - date.today()).days, (0, 1))
+        seen = [alarm["at"]]
+        for _ in range(3):
+            alarm = self.nag("skip", alarm["id"])
+            seen.append(alarm["at"])
+        days = [datetime.fromtimestamp(at).date() for at in seen]
+        self.assertEqual([(b - a).days for a, b in zip(days, days[1:])], [2, 2, 2])
+        self.assertEqual(self.nag("unskip", alarm["id"])["at"], seen[-2])
+        self.assertEqual(self.parse(alarm["spec"])["repeat"]["everyDays"], 2)
+        self.assertEqual(self.parse("every 1 day 9:00 water")["repeat"]["days"], [1, 2, 3, 4, 5, 6, 7])
 
     def test_every_in_the_message_is_just_words(self):
         result = self.parse("5m ask about every friday")

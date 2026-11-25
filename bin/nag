@@ -34,6 +34,9 @@ readonly MAX_MESSAGE=80
 readonly MAX_SPEC=200
 readonly MAX_SNOOZE_MINUTES=1440
 readonly MAX_RING_MINUTES=60
+# The shortest "every 30s": below that, one ring would not be over before the
+# next.
+readonly MIN_INTERVAL=10
 # One alarm document is a handful of fields, so anything approaching this is
 # either corruption or somebody else's file.
 readonly MAX_STATE_BYTES=4096
@@ -248,8 +251,20 @@ alarm_json() {
       if (. % 100) >= 11 and (. % 100) <= 13 then $n + "th"
       elif . % 10 == 1 then $n + "st" elif . % 10 == 2 then $n + "nd" elif . % 10 == 3 then $n + "rd"
       else $n + "th" end;
+    def unit($n; $one): if $n == 1 then $one else ($n | tostring) + " " + $one + "s" end;
+    # 300 -> "5m", 5400 -> "1h30m", the way the field takes it back.
+    def compact: [(. / 3600 | floor | select(. > 0) | tostring + "h"),
+        (. % 3600 / 60 | floor | select(. > 0) | tostring + "m"),
+        (. % 60 | select(. > 0) | tostring + "s")] | join("");
     # [phrase, list label, the words the field takes back]
-    def words: if .monthday then
+    def words: if .interval then .interval as $s |
+        ["every " + (if $s % 3600 == 0 then unit($s / 3600; "hour")
+          elif $s % 60 == 0 then unit($s / 60; "minute") else unit($s; "second") end),
+         ($s | compact), "every " + ($s | compact)]
+      elif .everyDays then .everyDays as $n |
+        ["every " + (if $n % 7 == 0 then unit($n / 7; "week") else unit($n; "day") end),
+         ($n | tostring) + "d", "every " + ($n | tostring) + "d"]
+      elif .monthday then
         ["every month on the " + (.monthday | ordinal), "monthly", "monthly " + (.monthday | tostring)]
       else .days as $d | ($d | map(tostring) | join(",")) as $key |
       if $key == "1,2,3,4,5,6,7" then ["every day", "daily", "every day"]
@@ -264,8 +279,12 @@ alarm_json() {
      remaining: $remaining, remainingSeconds: $remainingSeconds, ringing: false,
      repeat: null, repeatLabel: null, relative: $relative, spec: ([$spec, $message] | text)}
     + if $repeat then ($repeat | words) as $w |
-        {repeat: $repeat, repeatLabel: $w[1], atPhrase: ($w[0] + " at " + $repeat.time), skipped: $skipped,
-         spec: ([$w[2], $repeat.time, $message] | text)}
+        {repeat: $repeat, repeatLabel: $w[1], skipped: $skipped,
+         atPhrase: ([$w[0], ($repeat.time // empty | "at " + .)] | join(" ")),
+         spec: ([$w[2], $repeat.time // "", $message] | text)}
+        # An interval counts down like a duration does, since that is how it
+        # was typed.
+        + if $repeat.interval then {relative: true} else {} end
       else {} end'
 }
 
@@ -406,6 +425,11 @@ resolve_spec() {
 # occurrence is an ordinary one-shot alarm, and firing one sets the next: the
 # series is never a timer of its own, so a snooze, a dismiss or a skip acts on
 # one occurrence and cannot move the others.
+#
+# Two more kinds count from a start instead of naming days: an interval under a
+# day, {"interval": 300, "from": <epoch it was set>}, rings every so many
+# seconds after it; and {"everyDays": 2, "from": "2026-11-25", "time": "09:00"}
+# rings at that time every so many days from that date.
 
 day_number() {
   case ${1,,} in
@@ -450,12 +474,29 @@ clock_time() {
   date -d "today $word" +%H:%M 2>/dev/null
 }
 
+# The interval after "every": "5m", "30s", "1h30", "2d", or a number and its
+# unit in two words, "2 days", "5 min". Sets INTERVAL to seconds and
+# INTERVAL_WORDS to the words it took, or fails.
+interval_of() {
+  local first=${1:-} second=${2:-}
+  [[ $first =~ ^[0-9] ]] || return 1
+  if [[ $first =~ ^[0-9]+$ && ${second,,} =~ ^[a-z]+$ ]] && INTERVAL=$(parse_duration "$first$second"); then
+    INTERVAL_WORDS=2
+  elif INTERVAL=$(parse_duration "$first"); then
+    INTERVAL_WORDS=1
+  else
+    return 1
+  fi
+}
+
 # "every fri 15:00 standup", "every weekday at 17 leave", "daily 9:00 water",
 # "every mon, wed and fri 7:30 run", "17:00 every weekday leave",
-# "monthly 15 9:00 rent", "every month on the 1st at 8 pay". The keyword
+# "monthly 15 9:00 rent", "every month on the 1st at 8 pay",
+# "every 5m water", "every 2 days 9:00 plants". The keyword
 # is what makes it a repeat: "fri 15:00" alone is still next Friday, once, and
 # a time is required, because a repeat at a guessed hour is one you sleep
-# through. A monthly repeat without a day takes today's; a bare number after
+# through; only an interval under a day, which counts from now, goes without
+# one. A monthly repeat without a day takes today's; a bare number after
 # "monthly" is the day only when a time follows it, and "monthly 15 rent" is
 # refused: the 15th or 15:00 is a guess, and a wrong one rings on the wrong
 # day.
@@ -463,7 +504,7 @@ clock_time() {
 # Sets PARSED_AT, PARSED_MESSAGE and PARSED_REPEAT, or fails.
 parse_repeat() {
   local -a words=("$@") days=() parts
-  local i=0 time="" word part set monthday="" number
+  local i=0 time="" word part set monthday="" number every_days="" now from INTERVAL INTERVAL_WORDS
 
   # The time may come first.
   if time=$(clock_time "${words[0]:-}"); then i=1; else time=""; fi
@@ -472,7 +513,29 @@ parse_repeat() {
     every | each)
       i=$((i + 1))
       word=${words[i]:-}
-      if [[ ${word,,} == month ]]; then i=$((i + 1)) monthday=today; fi
+      if [[ ${word,,} == month ]]; then
+        i=$((i + 1)) monthday=today
+      elif interval_of "$word" "${words[i + 1]:-}"; then
+        i=$((i + INTERVAL_WORDS))
+        if ((INTERVAL % 86400 == 0)); then
+          # "every 2 days 9:00": whole days, at a time, which is required for
+          # the same reason as any other repeat.
+          every_days=$((INTERVAL / 86400))
+        else
+          # "every 5m water": from now, no clock time. A time with it would be
+          # a start the interval cannot keep, so it is refused rather than
+          # read into the message.
+          ((INTERVAL >= MIN_INTERVAL && INTERVAL < 86400)) && [[ -z $time ]] || return 1
+          word=${words[i]:-}
+          [[ ${word,,} == at ]] && word=${words[i + 1]:-}
+          ! clock_time "$word" >/dev/null || return 1
+          now=$(date +%s)
+          PARSED_REPEAT=$(jq -cn --argjson every "$INTERVAL" --argjson from "$now" '{interval: $every, from: $from}')
+          PARSED_AT=$((now + INTERVAL))
+          PARSED_MESSAGE=$(clean_text "${words[*]:i}" "$MAX_MESSAGE")
+          return 0
+        fi
+      fi
       ;;
     monthly) i=$((i + 1)) monthday=today ;;
     daily | weekdays | workdays | weekends) ;;
@@ -501,7 +564,7 @@ parse_repeat() {
   fi
 
   # Day words, alone or in lists: "mon, wed and fri", "mon,wed,fri".
-  while [[ -z $monthday ]] && ((i < ${#words[@]})); do
+  while [[ -z $monthday$every_days ]] && ((i < ${#words[@]})); do
     word=${words[i],,}
     if [[ $word == and ]]; then i=$((i + 1)); continue; fi
     IFS=, read -r -a parts <<<"${word%,}"
@@ -515,7 +578,7 @@ parse_repeat() {
     days+=("${parts[@]}")
     i=$((i + 1))
   done
-  [[ -n $monthday ]] || ((${#days[@]})) || return 1
+  [[ -n $monthday$every_days ]] || ((${#days[@]})) || return 1
 
   if [[ -z $time ]]; then
     word=${words[i]:-}
@@ -530,7 +593,16 @@ parse_repeat() {
     fi
   fi
 
-  if [[ -n $monthday ]]; then
+  if [[ $every_days == 1 ]]; then
+    PARSED_REPEAT=$(jq -cn --arg time "$time" '{days: [1, 2, 3, 4, 5, 6, 7], time: $time}')
+  elif [[ -n $every_days ]]; then
+    # The series counts from its first day: today if the time is still ahead,
+    # tomorrow otherwise.
+    from=$(date +%F)
+    (($(date -d "$from $time" +%s) > $(date +%s))) || from=$(date -d tomorrow +%F)
+    PARSED_REPEAT=$(jq -cn --argjson every "$every_days" --arg from "$from" --arg time "$time" \
+      '{everyDays: $every, from: $from, time: $time}')
+  elif [[ -n $monthday ]]; then
     PARSED_REPEAT=$(jq -cn --argjson day "$monthday" --arg time "$time" '{monthday: $day, time: $time}')
   else
     PARSED_REPEAT=$(printf '%s\n' "${days[@]}" | sort -nu |
@@ -546,10 +618,11 @@ parse_repeat() {
 # skips that day.
 next_occurrence() {
   local repeat=$1 after=$2 time days i day at
-  if [[ $(jq -r '.monthday // empty' <<<"$repeat") ]]; then
-    month_occurrence "$repeat" "$after" +
-    return
-  fi
+  case $(jq -r 'if .interval then "interval" elif .everyDays then "days" elif .monthday then "month" else "" end' <<<"$repeat") in
+    interval) interval_occurrence "$repeat" "$after" +; return ;;
+    days) days_occurrence "$repeat" "$after" +; return ;;
+    month) month_occurrence "$repeat" "$after" +; return ;;
+  esac
   time=$(jq -r '.time' <<<"$repeat")
   days=" $(jq -r '.days | map(tostring) | join(" ")' <<<"$repeat") "
   for ((i = 0; i <= 7; i++)); do
@@ -567,10 +640,11 @@ next_occurrence() {
 # back from next_occurrence.
 previous_occurrence() {
   local repeat=$1 before=$2 time days i day at
-  if [[ $(jq -r '.monthday // empty' <<<"$repeat") ]]; then
-    month_occurrence "$repeat" "$before" -
-    return
-  fi
+  case $(jq -r 'if .interval then "interval" elif .everyDays then "days" elif .monthday then "month" else "" end' <<<"$repeat") in
+    interval) interval_occurrence "$repeat" "$before" -; return ;;
+    days) days_occurrence "$repeat" "$before" -; return ;;
+    month) month_occurrence "$repeat" "$before" -; return ;;
+  esac
   time=$(jq -r '.time' <<<"$repeat")
   days=" $(jq -r '.days | map(tostring) | join(" ")' <<<"$repeat") "
   for ((i = 0; i <= 7; i++)); do
@@ -602,6 +676,55 @@ month_occurrence() {
       printf '%d' "$at"
       return 0
     fi
+  done
+  return 1
+}
+
+# The same for an interval: occurrences are its start plus a whole number of
+# intervals, the first one interval after the start.
+interval_occurrence() {
+  local repeat=$1 from=$2 way=$3 every start k
+  every=$(jq -r '.interval' <<<"$repeat")
+  start=$(jq -r '.from' <<<"$repeat")
+  [[ $every =~ ^[0-9]+$ && $start =~ ^[0-9]+$ ]] && ((every > 0)) || return 1
+  if [[ $way == + ]]; then
+    k=$(((from - start) / every + 1))
+    ((k >= 1)) || k=1
+  else
+    ((from - start > every)) || return 1
+    k=$(((from - start - 1) / every))
+  fi
+  printf '%d' $((start + k * every))
+}
+
+# And for every so many days: the days counted from its first one, at its
+# time. Days are counted in UTC dates so a DST change cannot shift one, and a
+# time that does not exist on a day skips that day.
+days_occurrence() {
+  local repeat=$1 from=$2 way=$3 every start start_day time day offset i at
+  every=$(jq -r '.everyDays' <<<"$repeat")
+  start=$(jq -r '.from' <<<"$repeat")
+  time=$(jq -r '.time' <<<"$repeat")
+  [[ $every =~ ^[0-9]+$ && $start =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && ((every > 0)) || return 1
+  day=$(date -ud "$(date -d "@$from" +%F)" +%s)
+  start_day=$(date -ud "$start" +%s 2>/dev/null) || return 1
+  offset=$(((day - start_day) / 86400))
+  if [[ $way == + ]]; then
+    ((offset < 0)) && offset=0
+    offset=$(((offset + every - 1) / every * every))
+  else
+    ((offset >= 0)) || return 1
+    offset=$((offset / every * every))
+  fi
+  for ((i = 0; i <= 2; i++)); do
+    ((offset >= 0)) || return 1
+    day=$(date -d "$start +$offset day" +%F 2>/dev/null) || return 1
+    at=$(date -d "$day $time" +%s 2>/dev/null) || at=""
+    if [[ -n $at ]] && { { [[ $way == + ]] && ((at > from)); } || { [[ $way == - ]] && ((at < from)); }; }; then
+      printf '%d' "$at"
+      return 0
+    fi
+    if [[ $way == + ]]; then offset=$((offset + every)); else offset=$((offset - every)); fi
   done
   return 1
 }
@@ -1025,15 +1148,22 @@ cmd_fire() {
   load_alarm "$ALARM_DIR/$id.json" || exit 0
   when=$(date -d "@$ALARM_AT" '+%H:%M')
 
+  # An occurrence of a repeat takes over from the one before it if that one is
+  # still ringing: "every 30s" would otherwise pile up cards and sounds.
+  [[ $ALARM_REPEAT == null ]] || supersede "$ALARM_REPEAT" "$ALARM_MESSAGE"
+
   write_state "$RING_DIR/$id.json" "$(jq -cn --arg id "$id" --argjson at "$ALARM_AT" \
-    --arg message "$ALARM_MESSAGE" --arg atLabel "$when" \
-    '{id: $id, at: $at, message: $message, atLabel: $atLabel}')"
+    --arg message "$ALARM_MESSAGE" --arg atLabel "$when" --argjson series "$ALARM_REPEAT" \
+    '{id: $id, at: $at, message: $message, atLabel: $atLabel}
+     + if $series then {series: $series} else {} end')"
   rm -f -- "$ALARM_DIR/$id.json"
 
   # The next occurrence is set before this one rings, so nothing done to this
-  # one can move it.
+  # one can move it. From now if this one fires late, so it is not in the past.
   if [[ $ALARM_REPEAT != null ]]; then
-    schedule_next "$ALARM_REPEAT" "$ALARM_AT" "$ALARM_MESSAGE" || true
+    local now
+    now=$(date +%s)
+    schedule_next "$ALARM_REPEAT" $((ALARM_AT > now ? ALARM_AT : now)) "$ALARM_MESSAGE" || true
   fi
 
   local RING_NID RING_WATCHER=""
@@ -1044,12 +1174,13 @@ cmd_fire() {
 
   # A second at a time, counted rather than clocked, until it is answered or
   # its time is up.
-  local ticks=$(($(ring_minutes) * 60))
+  local ticks=$(($(ring_minutes) * 60)) missed=false
   while [[ -f $RING_DIR/$id.json ]]; do
     if ((ticks-- <= 0)); then
       rm -f -- "$RING_DIR/$id.json"
       notify_missed "$ALARM_MESSAGE" "$ALARM_AT" "$RING_NID"
       refresh_panel
+      missed=true
       break
     fi
     sleep 1
@@ -1062,6 +1193,26 @@ cmd_fire() {
     pkill -P "$job" 2>/dev/null || true
     kill "$job" 2>/dev/null || true
   done
+  # Snooze and dismiss stop this unit before it gets here, so an alarm that
+  # stopped ringing without going missed was taken over by the next occurrence
+  # of its repeat: its card goes, the new one says the same.
+  if [[ $missed == false && -n $RING_NID ]]; then
+    timeout 2 gdbus call --session --dest org.freedesktop.Notifications \
+      --object-path /org/freedesktop/Notifications \
+      --method org.freedesktop.Notifications.CloseNotification "$RING_NID" >/dev/null 2>&1 || true
+  fi
+}
+
+# Stop the ringing occurrence of the repeat in $1 with the message in $2, if
+# there is one: removing its file ends its ring.
+supersede() {
+  local file raw
+  for file in "$RING_DIR"/*.json; do
+    raw=$(read_state "$file") || continue
+    jq -e --argjson series "$1" --arg message "$2" \
+      '.series == $series and .message == $message' <<<"$raw" >/dev/null 2>&1 && rm -f -- "$file"
+  done
+  return 0
 }
 
 # `demo on` and `demo off`, plus a bare `demo` that says which it is. Turning it
@@ -1090,6 +1241,7 @@ usage() {
 Usage: nag set <time> [message]     15:15 pick up the kids | 5m tea | tomorrow 9:00 dentist
                                     every fri 15:00 standup | every weekday 9am | daily 8:00
                                     monthly 15 9:00 rent | every month on the 1st at 8
+                                    every 5m water | every 30s | every 2 days 9:00 plants
        nag ask                      prompt for one through the Omarchy menu overlay
        nag parse <time> [message]   resolve without setting, for the live preview
        nag list                     every alarm as JSON

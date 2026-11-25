@@ -270,6 +270,11 @@ alarm_json() {
       if $key == "1,2,3,4,5,6,7" then ["every day", "daily", "every day"]
       elif $key == "1,2,3,4,5" then ["every weekday", "weekdays", "every weekday"]
       elif $key == "6,7" then ["every weekend", "weekends", "every weekend"]
+      # One day out of the week or of the weekdays reads as the exception.
+      elif ($d | length) == 6 then ([range(1; 8)] - $d)[0] as $x |
+        ["every day except " + long[$x - 1], "daily", "every day except " + (short[$x - 1] | ascii_downcase)]
+      elif ($d | length) == 4 and ($d | all(. <= 5)) then ([range(1; 6)] - $d)[0] as $x |
+        ["every weekday except " + long[$x - 1], "weekdays", "every weekday except " + (short[$x - 1] | ascii_downcase)]
       elif ($d | length) == 1 then ["every " + long[$d[0] - 1], short[$d[0] - 1], "every " + (short[$d[0] - 1] | ascii_downcase)]
       else ["every " + ($d[:-1] | map(short[. - 1]) | join(", ")) + " and " + short[$d[-1] - 1],
             ($d | map(short[. - 1]) | join(" ")), "every " + ($d | map(short[. - 1] | ascii_downcase) | join(","))]
@@ -474,6 +479,28 @@ clock_time() {
   date -d "today $word" +%H:%M 2>/dev/null
 }
 
+# The day words at the start of the arguments, alone or in lists: "mon, wed
+# and fri", "mon,wed,fri", "weekdays". Prints how many words they took, then
+# the ISO weekdays they name.
+day_words() {
+  local -a parts
+  local word part set count=0 days=""
+  for word in "$@"; do
+    word=${word,,}
+    if [[ $word == and ]]; then count=$((count + 1)); continue; fi
+    IFS=, read -r -a parts <<<"${word%,}"
+    ((${#parts[@]})) || break
+    set=""
+    for part in "${parts[@]}"; do
+      set+=" $(day_set "$part")" || { set=""; break; }
+    done
+    [[ -n $set ]] || break
+    days+=$set
+    count=$((count + 1))
+  done
+  echo "$count$days"
+}
+
 # The interval after "every": "5m", "30s", "1h30", "2d", or a number and its
 # unit in two words, "2 days", "5 min". Sets INTERVAL to seconds and
 # INTERVAL_WORDS to the words it took, or fails.
@@ -563,21 +590,24 @@ parse_repeat() {
     fi
   fi
 
-  # Day words, alone or in lists: "mon, wed and fri", "mon,wed,fri".
-  while [[ -z $monthday$every_days ]] && ((i < ${#words[@]})); do
-    word=${words[i],,}
-    if [[ $word == and ]]; then i=$((i + 1)); continue; fi
-    IFS=, read -r -a parts <<<"${word%,}"
-    ((${#parts[@]})) || break
-    set=""
-    for part in "${parts[@]}"; do
-      set+=" $(day_set "$part")" || { set=""; break; }
-    done
-    [[ -n $set ]] || break
-    read -r -a parts <<<"$set"
-    days+=("${parts[@]}")
-    i=$((i + 1))
-  done
+  if [[ -z $monthday$every_days ]]; then
+    read -r -a parts <<<"$(day_words "${words[@]:i}")"
+    i=$((i + parts[0]))
+    days=("${parts[@]:1}")
+
+    # "every weekday except wed", "every day except sat and sun": only after
+    # every day or every weekday, the two sets a day is taken out of.
+    word=${words[i]:-}
+    if [[ ${word,,} == except ]]; then
+      set=" $(printf '%s\n' "${days[@]}" | sort -nu | tr '\n' ' ')"
+      [[ $set == " 1 2 3 4 5 6 7 " || $set == " 1 2 3 4 5 " ]] || return 1
+      read -r -a parts <<<"$(day_words "${words[@]:i+1}")"
+      ((${#parts[@]} > 1)) || return 1
+      i=$((i + 1 + parts[0]))
+      for part in "${parts[@]:1}"; do set=${set// $part / }; done
+      read -r -a days <<<"$set"
+    fi
+  fi
   [[ -n $monthday$every_days ]] || ((${#days[@]})) || return 1
 
   if [[ -z $time ]]; then

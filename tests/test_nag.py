@@ -550,6 +550,28 @@ class RecurrenceTest(NagTestCase):
         for text in ("every friday standup", "every 2 days plants", "every"):
             self.assertFalse(self.nag("parse", text)["ok"], text)
 
+    def test_except_takes_days_out_of_every_day_or_weekday(self):
+        cases = {
+            "every weekday except wed 16:30 school": ([1, 2, 4, 5], "every weekday except Wednesday at 16:30",
+                                                      "every weekday except wed 16:30 school"),
+            "16:30 every workday except wednesday school": ([1, 2, 4, 5], "every weekday except Wednesday at 16:30",
+                                                            "every weekday except wed 16:30 school"),
+            "every day except sun 9:00 school": ([1, 2, 3, 4, 5, 6], "every day except Sunday at 09:00",
+                                                 "every day except sun 09:00 school"),
+            "daily except sat and sun at 7 school": ([1, 2, 3, 4, 5], "every weekday at 07:00",
+                                                     "every weekday 07:00 school"),
+            "every weekday except mon, wed 8:00 school": ([2, 4, 5], "every Tue, Thu and Fri at 08:00",
+                                                          "every tue,thu,fri 08:00 school"),
+        }
+        for text, (days, phrase, spec) in cases.items():
+            result = self.parse(text)
+            self.assertEqual(result["repeat"]["days"], days, text)
+            self.assertEqual((result["message"], result["atPhrase"], result["spec"]), ("school", phrase, spec), text)
+            self.assertEqual(self.parse(spec)["repeat"], result["repeat"], text)
+        for text in ("every fri except wed 9:00", "every weekend except sat 10:00",
+                     "every weekday except 9:00 school", "every day except mon-sun 9:00"):
+            self.assertFalse(self.nag("parse", text)["ok"], text)
+
     def test_interval_phrasings(self):
         cases = {
             "every 5m water": (300, "water", "every 5 minutes", "every 5m water"),

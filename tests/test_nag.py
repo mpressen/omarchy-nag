@@ -154,6 +154,16 @@ class NagTestCase(unittest.TestCase):
         wait_for(lambda: any(a["ringing"] for a in self.alarms()), what="ringing")
         return alarm_id
 
+    def ring_alarm(self, alarm_id):
+        """Let an alarm already set fire; returns its id."""
+        proc = subprocess.Popen(
+            [NAG, "fire", alarm_id], env=self.env, start_new_session=True,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        self.rings.append(proc)
+        wait_for(lambda: any(a["ringing"] and a["id"] == alarm_id for a in self.alarms()), what="ringing")
+        return alarm_id
+
     def stop_rings(self):
         with open(os.path.join(self.root, "pids")) as f:
             groups = [int(pid) for pid in f.read().split()]
@@ -592,45 +602,55 @@ class RecurrenceTest(NagTestCase):
         for text in ("every 0s", "every 5m 9:00 water", "every 5m at 9 water", "every 1d12h 9:00"):
             self.assertFalse(self.nag("parse", text)["ok"], text)
 
-    def test_interval_fires_and_takes_over_the_ringing_one(self):
+    def test_interval_waits_for_the_dismiss(self):
         first = self.ring("every 5m water")
-        [ringing, following] = self.alarms()
-        self.assertEqual(ringing["id"], first)
-        with open(os.path.join(self.root, "state", "nag", "ringing", first + ".json")) as f:
-            ring_at = json.load(f)["at"]
-        self.assertEqual(following["at"] - ring_at, 300)
-        self.assertEqual(following["repeatLabel"], "5m")
-        # The next occurrence fires while the first still rings.
-        proc = subprocess.Popen([NAG, "fire", following["id"]], env=self.env, start_new_session=True,
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        self.rings.append(proc)
-        wait_for(lambda: [a["id"] for a in self.alarms() if a["ringing"]] == [following["id"]], what="the takeover")
-        # One card for the whole repeat: the new occurrence rewrites the old
-        # one's in place, which is left open for it.
-        wait_for(lambda: len(self.notifications()) == 2, what="the second card")
-        [old, new] = self.notifications()
-        self.assertNotIn("-r", old)
-        self.assertEqual(new[new.index("-r") + 1], self.env["NAG_NID"])
-        self.assertFalse([c for c in self.calls("gdbus") if "CloseNotification" in " ".join(c)])
-        self.assertFalse([n for n in self.notifications() if "Missed" in " ".join(n)])
-
-    def test_a_missed_interval_card_is_rewritten_by_the_next(self):
-        self.settings(sound=self.sound, ringMinutes=1)
-        first = self.ring("every 5m water")
-        wait_for(lambda: [n for n in self.notifications() if "Missed: water" in n],
-                 timeout=15, what="the ring to time out")
-        [following] = [a for a in self.alarms() if a["id"] != first]
-        self.rings.append(subprocess.Popen(
-            [NAG, "fire", following["id"]], env=self.env, start_new_session=True,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
-        wait_for(lambda: len(self.notifications()) == 3, what="the next card")
-        new = self.notifications()[-1]
-        self.assertEqual(new[new.index("-r") + 1], NID)
-
-    def test_a_one_shot_never_rewrites_a_card(self):
-        self.ring("5m tea")
+        # Nothing is set while it rings: the next one counts from the answer.
+        self.assertEqual([a["id"] for a in self.alarms()], [first])
         [card] = self.notifications()
-        self.assertNotIn("-r", card)
+        self.assertNotIn("--action", card)
+        self.assertEqual(card[card.index("--exec") + 2:], ["dismiss", first])
+        before = int(time.time())
+        following = self.nag("dismiss", first)
+        self.assertEqual(following["repeat"]["interval"], 300)
+        self.assertLessEqual(abs(following["at"] - before - 300), 2)
+        [pending] = self.alarms()
+        self.assertEqual((pending["id"], pending["ringing"], pending["repeatLabel"]),
+                         (following["id"], False, "5m"))
+        self.rings[0].wait(timeout=5)
+
+    def test_closing_an_interval_card_sets_the_next(self):
+        self.ring("every 5m water")
+        self.close_notification()
+        wait_for(lambda: [a for a in self.alarms() if not a["ringing"]], what="the next one")
+        [pending] = self.alarms()
+        self.assertEqual(pending["repeat"]["interval"], 300)
+
+    def test_an_unanswered_interval_is_missed_and_stops(self):
+        self.settings(sound=self.sound, ringMinutes=1)
+        self.ring("every 5m water")
+        missed = wait_for(lambda: [n for n in self.notifications() if "Missed: water" in n],
+                          timeout=15, what="the ring to time out")[0]
+        self.assertTrue(missed[-1].endswith("· repeat stopped"), missed)
+        self.assertEqual(self.alarms(), [])
+
+    def test_an_interval_missed_while_off_stops(self):
+        alarm_id = self.set("every 5m water")["id"]
+        self.reboot()
+        self.move_alarm(alarm_id, int(time.time()) - 3600)
+        self.assertEqual(self.alarms(), [])
+        [missed] = [n for n in self.notifications() if "Missed: water" in n]
+        self.assertTrue(missed[-1].endswith("· repeat stopped"), missed)
+
+    def test_a_snoozed_interval_keeps_its_repeat(self):
+        alarm_id = self.ring("every 5m water")
+        snoozed = self.nag("snooze", alarm_id, "2")
+        self.assertEqual(snoozed["repeat"]["interval"], 300)
+        ringing = self.ring_alarm(snoozed["id"])
+        self.assertEqual(self.nag("dismiss", ringing)["repeat"]["interval"], 300)
+
+    def test_a_calendar_repeat_still_sets_its_next_when_it_fires(self):
+        self.ring("every day 9:00 water")
+        self.assertEqual(sorted(a["ringing"] for a in self.alarms()), [False, True])
 
     def test_every_few_days(self):
         alarm = self.set("every 2 days 9:00 plants")

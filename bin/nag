@@ -24,7 +24,6 @@ shopt -s nullglob
 readonly STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/nag"
 readonly ALARM_DIR="$STATE_DIR/alarms"
 readonly RING_DIR="$STATE_DIR/ringing"
-readonly CARD_DIR="$STATE_DIR/cards"
 readonly DEMO_FILE="$STATE_DIR/demo"
 
 # Bounds. The panel is one text field on a shared, long-lived shell process, so
@@ -35,8 +34,8 @@ readonly MAX_MESSAGE=80
 readonly MAX_SPEC=200
 readonly MAX_SNOOZE_MINUTES=1440
 readonly MAX_RING_MINUTES=60
-# The shortest interval, "every 1s": each occurrence takes over the card and
-# the ring of the one before.
+# The shortest interval, "every 1s": it counts from each dismiss, so even that
+# one never rings on top of itself.
 readonly MIN_INTERVAL=1
 # One alarm document is a handful of fields, so anything approaching this is
 # either corruption or somebody else's file.
@@ -122,11 +121,9 @@ ensure_dirs() {
   # The parent is only checked and re-moded, never swept: its entries are the
   # three directories below it.
   local dir
-  for dir in "$STATE_DIR" "$ALARM_DIR" "$RING_DIR" "$CARD_DIR"; do harden_dir "$dir" || exit 1; done
+  for dir in "$STATE_DIR" "$ALARM_DIR" "$RING_DIR"; do harden_dir "$dir" || exit 1; done
   clean_leaf_dir "$ALARM_DIR"
   clean_leaf_dir "$RING_DIR"
-  clean_leaf_dir "$CARD_DIR"
-  find "$CARD_DIR" -mindepth 1 -maxdepth 1 -type f -mmin +1500 -delete 2>/dev/null || true
 }
 
 # Read a state file through one descriptor that refuses to follow a symlink and
@@ -435,8 +432,9 @@ resolve_spec() {
 # one occurrence and cannot move the others.
 #
 # Two more kinds count from a start instead of naming days: an interval under a
-# day, {"interval": 300, "from": <epoch it was set>}, rings every so many
-# seconds after it; and {"everyDays": 2, "from": "2026-11-25", "time": "09:00"}
+# day, {"interval": 300, "from": <epoch it was set or last dismissed>}, rings
+# that many seconds after it, and its dismiss sets the next one, so one left
+# unanswered is missed and stops; and {"everyDays": 2, "from": "2026-11-25", "time": "09:00"}
 # rings at that time every so many days from that date.
 
 day_number() {
@@ -872,6 +870,11 @@ overdue() {
     return 0
   fi
   rm -f -- "$ALARM_DIR/$id.json"
+  # An interval missed stops, as one left ringing does.
+  if [[ -n $(interval_seconds "$repeat") ]]; then
+    notify_missed "$message" "$at" "" "repeat stopped"
+    return 0
+  fi
   notify_missed "$message" "$at"
   if [[ $repeat != null ]] && next=$(next_occurrence "$repeat" "$now"); then
     new=$(new_id)
@@ -904,22 +907,22 @@ cancel_alarm() {
 # body are rendered by components this plugin does not own, and the summary is
 # whatever somebody typed into the field, so it goes through headline().
 notify_ringing() {
-  local id=$1 message=$2 when=$3 replace=()
-  [[ -n ${4:-} ]] && replace=(-r "$4")
+  local id=$1 message=$2 when=$3 every=${4:-}
   # The buttons answer the alarm without opening the panel; clicking the card
   # runs the first, so it snoozes. Their words are constants and the id goes
   # after --with, so the message never reaches a command. With snooze off,
   # dismiss is the only answer left, so the card has no button: clicking it or
-  # its X dismisses.
+  # its X dismisses. An interval has no snooze either: the interval is its
+  # snooze, counted from the dismiss.
   local answer
-  if setting_off snoozeOn; then
+  if setting_off snoozeOn || [[ -n $every ]]; then
     answer=(--exec "$SELF" dismiss "$id")
   else
     answer=(--action "Snooze $(snooze_minutes) min" "$SELF" snooze --action "Dismiss" "$SELF" dismiss --with "$id")
   fi
 
   RING_NID=""
-  if RING_NID=$(omarchy-notification-send "${replace[@]}" -p -u critical -g "$(glyph)" "$(headline "$message")" "$when" \
+  if RING_NID=$(omarchy-notification-send -p -u critical -g "$(glyph)" "$(headline "$message")" "$when" \
     "${answer[@]}" 2>/dev/null); then
     if [[ $RING_NID =~ ^[0-9]+$ ]]; then
       watch_close "$id" "$RING_NID" &
@@ -957,13 +960,15 @@ watch_close() {
 }
 
 # Turn an alarm nobody answered into a missed one: the ringing card in $3 is
-# replaced in place when there is one, and a new card is sent otherwise. No
-# buttons, since there is nothing left to answer, and critical so it stays
-# until closed: a missed alarm whose card expires is missed twice.
+# replaced in place when there is one, and a new card is sent otherwise, with
+# the note in $4 after its time. No buttons, since there is nothing left to
+# answer, and critical so it stays until closed: a missed alarm whose card
+# expires is missed twice.
 notify_missed() {
   local message=$1 at=$2 nid=${3:-} when replace=()
   when=$(date -d "@$at" '+%H:%M')
   [[ $(date -d "@$at" +%F) == "$(date +%F)" ]] || when=$(date -d "@$at" '+%a %-d %b %H:%M')
+  [[ -n ${4:-} ]] && when+=" · $4"
   [[ -n $nid ]] && replace=(-r "$nid")
   omarchy-notification-send "${replace[@]}" -u critical -g "$(glyph)" \
     "Missed: $(headline "$message")" "$when" >/dev/null 2>&1 || true
@@ -1068,7 +1073,9 @@ cmd_clear() {
 }
 
 # Put a ringing or pending alarm off by some minutes, as a one-shot: snoozing
-# an occurrence of a repeat leaves the next occurrence where it was.
+# an occurrence of a repeat leaves the next occurrence where it was. A ringing
+# interval has no next occurrence yet, so it stays one: its dismiss, later,
+# sets the next.
 cmd_snooze() {
   begin_write
   local id=${1:-} minutes=${2:-}
@@ -1076,11 +1083,16 @@ cmd_snooze() {
   valid_id "$id" || die "unknown alarm"
   int_in "$minutes" 1 "$MAX_SNOOZE_MINUTES" || die "bad snooze"
 
-  local ALARM_ID ALARM_AT ALARM_MESSAGE ALARM_REPEAT ALARM_RELATIVE
-  load_alarm "$RING_DIR/$id.json" || load_alarm "$ALARM_DIR/$id.json" || die "unknown alarm"
+  local ALARM_ID ALARM_AT ALARM_MESSAGE ALARM_REPEAT ALARM_RELATIVE series=null
+  if load_alarm "$RING_DIR/$id.json"; then
+    series=$(read_state "$RING_DIR/$id.json" | jq -c '.series // null' 2>/dev/null) || series=null
+    [[ -n $(interval_seconds "$series") ]] || series=null
+  else
+    load_alarm "$ALARM_DIR/$id.json" || die "unknown alarm"
+  fi
   cancel_alarm "$id"
 
-  local PARSED_AT=$(($(date +%s) + 10#$minutes * 60)) PARSED_MESSAGE=$ALARM_MESSAGE PARSED_REPEAT=null PARSED_RELATIVE=true
+  local PARSED_AT=$(($(date +%s) + 10#$minutes * 60)) PARSED_MESSAGE=$ALARM_MESSAGE PARSED_REPEAT=$series PARSED_RELATIVE=true
   schedule_parsed
 }
 
@@ -1182,14 +1194,8 @@ cmd_fire() {
   load_alarm "$ALARM_DIR/$id.json" || exit 0
   when=$(date -d "@$ALARM_AT" '+%H:%M')
 
-  # An occurrence of a repeat takes over from the one before it if that one is
-  # still ringing: "every 30s" would otherwise pile up cards and sounds.
-  local card="" last_card=""
-  if [[ $ALARM_REPEAT != null ]]; then
-    supersede "$ALARM_REPEAT" "$ALARM_MESSAGE"
-    card=$(card_file "$ALARM_REPEAT" "$ALARM_MESSAGE")
-    last_card=$(last_card "$card" "$ALARM_REPEAT")
-  fi
+  local every
+  every=$(interval_seconds "$ALARM_REPEAT")
 
   write_state "$RING_DIR/$id.json" "$(jq -cn --arg id "$id" --argjson at "$ALARM_AT" \
     --arg message "$ALARM_MESSAGE" --arg atLabel "$when" --argjson series "$ALARM_REPEAT" \
@@ -1199,28 +1205,28 @@ cmd_fire() {
 
   # The next occurrence is set before this one rings, so nothing done to this
   # one can move it. From now if this one fires late, so it is not in the past.
-  if [[ $ALARM_REPEAT != null ]]; then
+  # An interval waits instead: its next one is set by the dismiss, so it counts
+  # from the moment it was answered and never rings on top of itself.
+  if [[ $ALARM_REPEAT != null && -z $every ]]; then
     local now
     now=$(date +%s)
     schedule_next "$ALARM_REPEAT" $((ALARM_AT > now ? ALARM_AT : now)) "$ALARM_MESSAGE" || true
   fi
 
   local RING_NID RING_WATCHER=""
-  notify_ringing "$id" "$ALARM_MESSAGE" "$when" "$last_card"
-  if [[ -n $card ]]; then
-    if [[ -n $RING_NID ]]; then write_state "$card" "$RING_NID" || true; else rm -f -- "$card"; fi
-  fi
+  notify_ringing "$id" "$ALARM_MESSAGE" "$when" "$every"
   refresh_panel
   ring "$id" &
   local sound=$!
 
   # A second at a time, counted rather than clocked, until it is answered or
-  # its time is up.
+  # its time is up. An interval nobody answered stops there: nothing set its
+  # next one, and nobody is there to hear it.
   local ticks=$(($(ring_minutes) * 60))
   while [[ -f $RING_DIR/$id.json ]]; do
     if ((ticks-- <= 0)); then
       rm -f -- "$RING_DIR/$id.json"
-      notify_missed "$ALARM_MESSAGE" "$ALARM_AT" "$RING_NID"
+      notify_missed "$ALARM_MESSAGE" "$ALARM_AT" "$RING_NID" "${every:+repeat stopped}"
       refresh_panel
       break
     fi
@@ -1234,42 +1240,40 @@ cmd_fire() {
     pkill -P "$job" 2>/dev/null || true
     kill "$job" 2>/dev/null || true
   done
-  # An alarm taken over by the next occurrence of its repeat leaves its card
-  # alone: the new occurrence has already rewritten that card in place.
-  # Closing it would only strand it, since the shell keeps a closed card on
-  # screen with nothing left to update it.
 }
 
-# Where the card of a repeat's latest occurrence is kept, by repeat and message.
-card_file() {
-  printf '%s\n%s' "$1" "$2" | sha256sum | cut -c1-32 | sed "s|^|$CARD_DIR/|"
-}
-
-# The card the occurrence before this one left, ringing or missed, for the new
-# one to rewrite in place: one card per repeat, not one per occurrence. Only
-# an interval's, and only one recent enough to be that occurrence's: an old id
-# may since have gone to another notification.
-last_card() {
-  local file=$1 every nid age
-  every=$(jq -r '.interval // empty' <<<"$2" 2>/dev/null) || return 0
-  [[ $every =~ ^[0-9]+$ ]] || return 0
-  nid=$(read_state "$file" 2>/dev/null) || return 0
-  [[ $nid =~ ^[0-9]+$ ]] || return 0
-  age=$(($(date +%s) - $(stat -c %Y -- "$file" 2>/dev/null || echo 0)))
-  ((age >= 0 && age <= every + $(ring_minutes) * 60 + 60)) || return 0
-  printf '%s\n' "$nid"
-}
-
-# Stop the ringing occurrence of the repeat in $1 with the message in $2, if
-# there is one: removing its file ends its ring.
-supersede() {
-  local file raw
-  for file in "$RING_DIR"/*.json; do
-    raw=$(read_state "$file") || continue
-    jq -e --argjson series "$1" --arg message "$2" \
-      '.series == $series and .message == $message' <<<"$raw" >/dev/null 2>&1 && rm -f -- "$file"
-  done
+# The seconds of an interval repeat ("every 5m"), or nothing for any other
+# alarm.
+interval_seconds() {
+  local every
+  every=$(jq -r 'if type == "object" then .interval // empty else empty end' <<<"${1:-null}" 2>/dev/null) || return 0
+  [[ $every =~ ^[0-9]+$ ]] && ((every > 0)) && printf '%s' "$every"
   return 0
+}
+
+# Answer a ringing alarm. For an interval, the answer is what sets the next
+# one, that many seconds from now; anything else is stopped as cancel does,
+# its next occurrence already set when it fired.
+cmd_dismiss() {
+  begin_write
+  local id=${1:-}
+  valid_id "$id" || die "unknown alarm"
+
+  local ALARM_ID ALARM_AT ALARM_MESSAGE ALARM_REPEAT ALARM_RELATIVE raw series every now
+  if raw=$(read_state "$RING_DIR/$id.json" 2>/dev/null) &&
+    series=$(jq -c '.series // null' <<<"$raw" 2>/dev/null) &&
+    every=$(interval_seconds "$series") && [[ -n $every ]]; then
+    load_alarm "$RING_DIR/$id.json" || die "unknown alarm"
+    cancel_alarm "$id"
+    now=$(date +%s)
+    local PARSED_AT=$((now + every)) PARSED_MESSAGE=$ALARM_MESSAGE PARSED_RELATIVE=false PARSED_REPEAT
+    PARSED_REPEAT=$(jq -c --argjson from "$now" '.from = $from' <<<"$series")
+    schedule_parsed
+    return
+  fi
+  cancel_alarm "$id"
+  refresh_panel
+  ok_json '{ok: true}'
 }
 
 # `demo on` and `demo off`, plus a bare `demo` that says which it is. Turning it
@@ -1306,7 +1310,7 @@ Usage: nag set <time> [message]     15:15 pick up the kids | 5m tea | tomorrow 9
        nag skip <id>                skip the next occurrence of a repeat
        nag unskip <id>              undo one skip of a repeat
        nag edit <id> <time> [message]
-       nag dismiss <id>
+       nag dismiss <id>             answer a ringing alarm; an interval sets its next
        nag cancel <id>
        nag clear
        nag demo on|off|status    invented alarms for screenshots
@@ -1322,7 +1326,8 @@ case ${1:-list} in
   skip) shift; cmd_skip "$@" ;;
   unskip) shift; cmd_unskip "$@" ;;
   edit) shift; cmd_edit "$@" ;;
-  dismiss | cancel) shift; cmd_cancel "$@" ;;
+  dismiss) shift; cmd_dismiss "$@" ;;
+  cancel) shift; cmd_cancel "$@" ;;
   clear) cmd_clear ;;
   demo) shift; cmd_demo "$@" ;;
   fire) shift; cmd_fire "$@" ;;

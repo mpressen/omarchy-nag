@@ -349,8 +349,11 @@ Panel {
     preview = null
   }
 
-  // Cancels a pending alarm, or stops a ringing one.
-  function removeAlarm(id) { runAction(["cancel", String(id)]) }
+  // Cancels a pending alarm, or answers a ringing one: an interval's answer
+  // sets its next one.
+  function removeAlarm(alarm) { runAction([alarm.ringing ? "dismiss" : "cancel", String(alarm.id)]) }
+  // An interval repeat is its own snooze, counted from the dismiss.
+  function canSnooze(alarm) { return snoozeOn && !(alarm.series && alarm.series.interval) }
   function snoozeAlarm(id) { runAction(["snooze", String(id), String(snoozeMinutes)]) }
   function skipAlarm(id) { runAction(["skip", String(id)]) }
   function unskipAlarm(id) { runAction(["unskip", String(id)]) }
@@ -364,7 +367,7 @@ Panel {
       return
     }
     confirmId = ""
-    removeAlarm(alarm.id)
+    removeAlarm(alarm)
   }
 
   // The field, filled with the alarm as text, in a view of its own: Enter
@@ -385,9 +388,9 @@ Panel {
 
   // What Enter on a ringing alarm does: snooze, the only thing worth one key
   // when an alarm is going off in front of you, or dismiss with snooze off.
-  function answerAlarm(id) {
-    if (snoozeOn) snoozeAlarm(id)
-    else removeAlarm(id)
+  function answerAlarm(alarm) {
+    if (canSnooze(alarm)) snoozeAlarm(alarm.id)
+    else removeAlarm(alarm)
   }
 
   function expandHome(path) {
@@ -1000,7 +1003,7 @@ Panel {
             case Qt.Key_Enter:
               if (onRow) {
                 var alarm = root.cursorAlarm()
-                if (alarm && alarm.ringing) root.answerAlarm(alarm.id)
+                if (alarm && alarm.ringing) root.answerAlarm(alarm)
               } else {
                 root.setAlarm()
               }
@@ -1191,7 +1194,7 @@ Panel {
 
                   PanelActionButton {
                     anchors.verticalCenter: parent.verticalCenter
-                    visible: modelData.ringing && root.snoozeOn
+                    visible: modelData.ringing && root.canSnooze(modelData)
                     focusable: false
                     iconText: root.iconSnooze
                     tooltipText: "Snooze " + root.snoozeMinutes + " minutes"
@@ -1227,10 +1230,11 @@ Panel {
 
                   // Edit, for every alarm, except a ringing one that offers
                   // a snooze instead: with snooze off, editing is how it is
-                  // put off.
+                  // put off. A ringing interval has neither: it is answered,
+                  // and its dismiss sets the next one.
                   PanelActionButton {
                     anchors.verticalCenter: parent.verticalCenter
-                    visible: !(modelData.ringing && root.snoozeOn)
+                    visible: !modelData.ringing || (!root.snoozeOn && !(modelData.series && modelData.series.interval))
                     focusable: false
                     iconText: root.iconEdit
                     // The pencil fills 0.92 em where skip and close fill

@@ -35,9 +35,9 @@ readonly MAX_MESSAGE=80
 readonly MAX_SPEC=200
 readonly MAX_SNOOZE_MINUTES=1440
 readonly MAX_RING_MINUTES=60
-# The shortest "every 30s": below that, one ring would not be over before the
-# next.
-readonly MIN_INTERVAL=10
+# The shortest interval, "every 1s": each occurrence takes over the card and
+# the ring of the one before.
+readonly MIN_INTERVAL=1
 # One alarm document is a handful of fields, so anything approaching this is
 # either corruption or somebody else's file.
 readonly MAX_STATE_BYTES=4096

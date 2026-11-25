@@ -576,6 +576,7 @@ class RecurrenceTest(NagTestCase):
         cases = {
             "every 5m water": (300, "water", "every 5 minutes", "every 5m water"),
             "every 30s": (30, "", "every 30 seconds", "every 30s"),
+            "every 1s tick": (1, "tick", "every second", "every 1s tick"),
             "every 1 min stretch": (60, "stretch", "every minute", "every 1m stretch"),
             "every 1h30 walk": (5400, "walk", "every 90 minutes", "every 1h30m walk"),
             "every 5 water": (300, "water", "every 5 minutes", "every 5m water"),
@@ -587,8 +588,8 @@ class RecurrenceTest(NagTestCase):
             self.assertLessEqual(abs(result["at"] - before - seconds), 2, text)
             self.assertEqual((result["message"], result["atPhrase"], result["spec"]), (message, phrase, spec), text)
             self.assertTrue(result["relative"], text)
-        # Too short, a clock time it cannot keep, or not whole days.
-        for text in ("every 5s", "every 5m 9:00 water", "every 5m at 9 water", "every 1d12h 9:00"):
+        # Nothing, a clock time it cannot keep, or not whole days.
+        for text in ("every 0s", "every 5m 9:00 water", "every 5m at 9 water", "every 1d12h 9:00"):
             self.assertFalse(self.nag("parse", text)["ok"], text)
 
     def test_interval_fires_and_takes_over_the_ringing_one(self):
